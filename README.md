@@ -1,0 +1,247 @@
+# dev-agent
+
+> Notion task를 입력으로 받아 **기획 → 구현 → 리뷰 → 커밋 → PR**까지 자율적으로 수행하는 AI 멀티 에이전트 개발 파이프라인.
+
+[![Node](https://img.shields.io/badge/node-%3E%3D18.0.0-brightgreen)]()
+[![TypeScript](https://img.shields.io/badge/typescript-5.6-blue)]()
+[![License](https://img.shields.io/badge/license-MIT-lightgrey)]()
+
+## 주요 특징
+
+- **멀티 에이전트 협업**: Claude Code (기획·리뷰) + Codex (구현)의 역할 분담
+- **자율 사이클 루프**: 리뷰 결과에 따라 자동 재구현 (CHANGES REQUESTED → 다음 사이클)
+- **Notion 양방향 통합**: Task body 자동 로드 → Status 자동 전이 → 산출물 본문/코멘트 게시
+- **Git 통합**: 사이클별 커밋, 자동 PR 생성, 원격 미설정 시 graceful skip
+- **EventEmitter 기반 결합 분리**: 동기화 로직이 파이프라인 코드를 건드리지 않음
+- **Graceful degradation**: 외부 API 실패가 본 작업을 막지 않음
+
+## 아키텍처
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│                     WorkflowService (Facade)                 │
+│         executeFromNotion / execute / resume / status        │
+└─────────────────┬────────────────────────┬───────────────────┘
+                  │                        │
+        ┌─────────▼──────────┐   ┌─────────▼──────────────┐
+        │   Orchestrator     │   │  Integrations (Notion) │
+        │   PipelineService  │   │  - PlanningEnhancer    │
+        │                    │   │  - NotionStatusSync    │
+        │  ┌──────────────┐  │   │  - NotionArtifactSync  │
+        │  │  Planning    │──┼───┼─► toggle blocks +      │
+        │  │  (Claude)    │  │   │   summary comments     │
+        │  ├──────────────┤  │   └────────────────────────┘
+        │  │ Implementation│ │
+        │  │   (Codex)    │  │
+        │  ├──────────────┤  │
+        │  │   Review     │  │
+        │  │  (Claude)    │  │
+        │  └──────────────┘  │
+        └────────────────────┘
+```
+
+## 워크플로우 흐름
+
+1. **Planning** — Claude Code가 기획서 3종 생성
+   - `requirements.md` — 요구사항 분석
+   - `implementation-spec.md` — 구현 명세
+   - `test-scenarios.md` — 테스트 시나리오
+2. **Implementation** — Codex가 코드 작성 및 사이클 커밋
+3. **Review** — Claude Code가 코드 리뷰 (APPROVED 시 종료)
+4. **Finalize** — origin 있으면 push + PR, 없으면 로컬 보존
+
+각 단계에서 Notion Status 자동 전이: `To Do → Planning → In Progress → In Review → Done`
+
+## 설치
+
+### 사전 요구사항
+
+- Node.js 18+
+- git
+- [Claude Code CLI](https://docs.claude.com/claude-code)
+- [Codex CLI](https://github.com/openai/codex)
+
+### 빌드
+
+```bash
+git clone https://github.com/spring-kang/dev-agent.git
+cd dev-agent
+npm install
+npx tsc          # → dist/ 생성
+```
+
+## 빠른 시작
+
+### 1. Notion Integration 등록 (선택)
+
+```bash
+node dist/index.js integrations notion set \
+  --token secret_xxxxxxxxxxxx \
+  --database-id <NOTION_DB_ID>
+```
+
+### 2. 워크플로우 실행
+
+**Notion task 기반:**
+```bash
+node dist/index.js --verbose run \
+  --task 376e8963-3f9d-80bb-ac3e-d8818389de61 \
+  --max-iterations 3
+```
+
+**직접 작업 지시:**
+```bash
+node dist/index.js run \
+  --task "README에 사용법 섹션 추가하고 'docs: 사용법 추가' 메시지로 커밋"
+```
+
+## CLI 명령어
+
+| 명령어 | 설명 |
+|---|---|
+| `run` | 워크플로우 실행 |
+| `resume` | 중단된 워크플로우 복구 |
+| `status` | 진행 상태 조회 |
+| `integrations notion set/show/clear` | Notion 통합 설정 |
+| `serve` | 웹 대시보드 서버 실행 |
+
+### `run` 주요 옵션
+
+| 옵션 | 설명 | 기본값 |
+|---|---|---|
+| `--task <id\|text>` | Notion Page ID 또는 작업 설명 | 필수 |
+| `--project-path <path>` | 작업 대상 경로 | Notion 속성 또는 cwd |
+| `--max-iterations <N>` | 최대 사이클 수 | 3 |
+| `--verbose` | 상세 로그 | false |
+| `--skip-claude-enhancement` | 기획 고도화 단계 스킵 | false |
+
+## Notion DB 구성
+
+### 필수 속성
+
+| 속성명 | 타입 | 용도 |
+|---|---|---|
+| `Name` | Title | 작업 제목 |
+| `Status` | Status / Select | 워크플로우 상태 자동 전이용 |
+| `Project Path` | Rich text | 작업 대상 로컬 경로 |
+
+### Status 옵션
+
+- `To Do` (또는 `Not started`)
+- `Planning`
+- `In Progress`
+- `In Review`
+- `Done`
+
+> 라벨이 다르면 `integrations.json`의 `statusMapping`으로 매핑 가능.
+
+### Notion Integration Capabilities
+
+Settings → Integrations → Capabilities에서 활성화:
+- ✅ Read content
+- ✅ Update content
+- ✅ Insert content
+- ✅ Insert comments
+
+## 티켓 작성 템플릿
+
+````markdown
+# 작업 제목
+
+## 목표
+한 문장으로 무엇을 달성할지
+
+## 컨텍스트
+배경 정보, 왜 필요한지
+
+## 요구사항
+- 대상 파일/경로
+- 변경 내용
+- 커밋 메시지: `docs: 한국어 컨벤션 메시지`
+
+## 수용 기준
+- [ ] 자동 검증 가능한 조건 1
+- [ ] git log -1 --pretty=%s 결과 일치
+````
+
+**좋은 티켓의 조건:**
+1. 목표가 한 문장으로 요약 가능
+2. 수용 기준이 자동 검증 가능
+3. 커밋 메시지는 backtick으로 감싸기 (자동 추출 패턴)
+4. Project Path 속성 필수
+
+## 결과물 구조
+
+```
+<project>/
+├── .ai-workflow/
+│   ├── current/
+│   │   ├── artifacts/
+│   │   │   ├── requirements.md
+│   │   │   ├── implementation-spec.md
+│   │   │   └── test-scenarios.md
+│   │   └── state.json
+│   └── archive/
+└── (소스 코드 변경 + git 커밋)
+```
+
+### Git 결과
+- 새 브랜치: `ai/YYYYMMDD-HHMMSS-<task-slug>`
+- 사이클별 커밋 (spec에서 메시지 자동 추출)
+- origin 있으면 push + PR, 없으면 로컬 브랜치 보존
+
+### Notion 결과
+- Status 자동 전이
+- 본문에 사이클별 toggle 블록 추가
+- 코멘트로 사이클별 진행 요약
+
+## 프로젝트 구조
+
+```
+src/
+├── cli/                    # CLI 진입점
+├── components/             # 핵심 컴포넌트
+│   ├── claude-agent.ts     # Claude Code 래퍼
+│   ├── codex-agent.ts      # Codex 래퍼
+│   ├── git-manager.ts      # git 작업
+│   ├── state-manager.ts    # 워크플로우 상태 관리
+│   └── ...
+├── services/               # 비즈니스 로직
+│   ├── workflow.service.ts # Facade
+│   ├── pipeline.service.ts # 사이클 루프
+│   └── ...
+├── integrations/           # 외부 통합
+│   ├── notion-client.ts
+│   ├── notion-status-sync.ts
+│   ├── notion-artifact-sync.ts
+│   └── notion-block-appender.ts
+├── orchestrator/           # 워크플로우 오케스트레이션
+├── types/                  # 타입 정의
+├── web/                    # 웹 서버 (Express + Socket.IO)
+└── container.ts            # DI Composition Root
+```
+
+## 개발
+
+```bash
+npm run dev          # tsx로 즉시 실행
+npm test             # 단위 테스트
+npm run typecheck    # 타입 체크
+npm run lint         # ESLint
+npm run format       # Prettier
+npm run web:dev      # 웹 대시보드 dev 서버
+```
+
+## 트러블슈팅
+
+| 증상 | 해결 |
+|---|---|
+| `Insufficient permissions for /comments` | Notion Integration에서 `Insert comments` 활성화 |
+| `프로젝트 경로가 지정되지 않았습니다` | Project Path 속성 추가 또는 `--project-path` 사용 |
+| 커밋 메시지가 `[ai-cycle-N] Auto-generated` | spec에 `커밋 메시지: \`...\`` 형식으로 백틱 사용 |
+| `원격 저장소(origin)가 설정되어 있지 않아` | 정상 — 로컬 브랜치에 보존됨 |
+| Notion task 로드 실패 | DB/페이지 `Connections`에 Integration 추가 |
+
+## 라이선스
+
+MIT

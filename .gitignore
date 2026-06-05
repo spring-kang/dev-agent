@@ -1,0 +1,56 @@
+# ─── 의존성 ───
+node_modules/
+web/node_modules/
+
+# ─── 빌드 산출물 ───
+dist/
+web/.next/
+web/out/
+*.tsbuildinfo
+
+# ─── 환경 변수 / 시크릿 ───
+.env
+.env.*
+*.pem
+*.key
+secrets.json
+
+# ─── dev-agent 런타임 설정 (Notion 토큰 등) ───
+.dev-agent/
+integrations.json
+
+# ─── 로그 / 임시 ───
+logs/
+*.log
+*.tmp
+*.pid
+
+# ─── 워크플로우 결과물 ───
+.ai-workflow/
+projects/
+
+# ─── 테스트 / 커버리지 ───
+coverage/
+.nyc_output/
+
+# ─── 에디터 / OS ───
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# ─── Claude / AIDLC 로컬 설정 ───
+.claude/settings.local.json
+aidlc-docs/audit.md
+aidlc-docs/aidlc-state.md
+
+# ─── 디버그 스크립트 (Notion ID 등 포함 가능) ───
+/tmp/append-*.mjs
+
+# ─── 패키지 매니저 ───
+.pnp.*
+yarn-error.log
+npm-debug.log*
+yarn-debug.log*
