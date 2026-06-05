@@ -54,6 +54,8 @@
 
 ## 설치
 
+> 📘 **새 PC에서 처음 설치하는 경우** → [SETUP.md](./SETUP.md) 단계별 가이드 참조
+
 ### 사전 요구사항
 
 - Node.js 18+
@@ -61,7 +63,15 @@
 - [Claude Code CLI](https://docs.claude.com/claude-code)
 - [Codex CLI](https://github.com/openai/codex)
 
-### 빌드
+### 빌드 (자동)
+
+```bash
+git clone https://github.com/spring-kang/dev-agent.git
+cd dev-agent
+./setup.sh       # 의존성 설치 + TypeScript 빌드 + 웹 빌드
+```
+
+### 빌드 (수동)
 
 ```bash
 git clone https://github.com/spring-kang/dev-agent.git
