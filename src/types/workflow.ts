@@ -11,6 +11,8 @@ import type { AppError } from "./errors.js";
 export type WorkflowPhase =
   | "initializing"
   | "planning"
+  | "plan_review"
+  | "approved"
   | "implementation"
   | "review"
   | "pr_creation"
@@ -21,6 +23,8 @@ export type WorkflowPhase =
 export const PHASE_ORDER: WorkflowPhase[] = [
   "initializing",
   "planning",
+  "plan_review",
+  "approved",
   "implementation",
   "review",
   "pr_creation",
@@ -29,6 +33,8 @@ export const PHASE_ORDER: WorkflowPhase[] = [
 export const PHASE_ICONS: Record<WorkflowPhase, string> = {
   initializing: "\u2699\uFE0F",
   planning: "\uD83D\uDCDD",
+  plan_review: "\uD83D\uDCCB",
+  approved: "\u2714\uFE0F",
   implementation: "\uD83D\uDEE0\uFE0F",
   review: "\uD83D\uDD0D",
   pr_creation: "\uD83D\uDE80",
@@ -40,6 +46,8 @@ export const PHASE_ICONS: Record<WorkflowPhase, string> = {
 export const PHASE_COLORS: Record<WorkflowPhase, string> = {
   initializing: "cyan",
   planning: "blue",
+  plan_review: "cyan",
+  approved: "green",
   implementation: "yellow",
   review: "magenta",
   pr_creation: "green",
@@ -75,6 +83,10 @@ export interface WorkflowState {
   updatedAt: string;
   completedAt?: string;
   error?: string;
+  /** Plan 단계 완료 여부 (plan/build 분리 워크플로우용) */
+  planningCompleted?: boolean;
+  /** Build 진입 시각 (감사용, ISO 8601) */
+  planApprovedAt?: string;
 }
 
 // ── 워크플로우 요청/결과 ──
@@ -113,6 +125,8 @@ export interface WorkflowStatus {
 
 // ── 사이클 ──
 
+export type PipelineStage = "full" | "plan-only" | "build-only";
+
 export interface CycleContext {
   cycleNumber: number;
   projectPath: string;
@@ -121,6 +135,8 @@ export interface CycleContext {
   reworkScope?: "partial" | "full";
   artifacts: WorkflowArtifacts;
   config: WorkflowConfig;
+  /** plan/build 분리 실행 시 단계 지정 (기본 full) */
+  stage?: PipelineStage;
 }
 
 export interface CycleResult {

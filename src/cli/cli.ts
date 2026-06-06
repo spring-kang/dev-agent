@@ -217,22 +217,54 @@ export class CLI {
    * - rc               → 현재 로드된 .devagentrc 출력
    */
   private setupShortcutCommands(): void {
-    // task <id> — Notion task ID/URL로 즉시 실행
+    // task <id> — DEPRECATED: plan / build 로 분리됨
     this.program
       .command("task")
-      .description("Notion task 실행 (run --task의 단축형). ID 생략 시 .devagentrc의 task 사용")
+      .description("[제거됨] `devagent plan <id>` → 승인 → `devagent build <id>` 로 분리")
+      .argument("[pageIdOrUrl]", "(무시됨)")
+      .action(async () => {
+        console.error(
+          "❌ `devagent task` 는 제거되었습니다.\n" +
+            "   기획-개발이 2단계로 분리되었습니다:\n" +
+            "     1) devagent plan <pageId>   (기획 고도화 + Planning)\n" +
+            "     2) Notion 에서 Status 를 \"Approved\" 로 전이\n" +
+            "     3) devagent build <pageId>  (개발 + 리뷰 + PR)\n",
+        );
+        process.exit(1);
+      });
+
+    // plan <pageId> — 기획 고도화 + Planning 단계만 실행
+    this.program
+      .command("plan")
+      .description("Notion task 기획 단계 실행 (PlanningEnhancer + Claude.plan)")
       .argument("[pageIdOrUrl]", "Notion page ID 또는 URL")
       .option("-p, --project <path>", "프로젝트 경로 override")
-      .option("-m, --max-iterations <number>", "최대 반복 횟수", parseInt)
-      .option("--skip-enhancement", "Claude 기획 고도화 건너뛰기")
+      .option("--skip-enhancement", "Claude 기획 고도화 건너뛰기 (fallback 사용)")
       .action(async (pageIdOrUrl: string | undefined, options: Record<string, unknown>) => {
         const taskValue = pageIdOrUrl ?? this.rc.task;
         if (!taskValue) {
           throw new Error(
-            "task ID가 필요합니다. 인자로 전달하거나 .devagentrc.json의 'task' 키를 설정하세요.",
+            "page ID 가 필요합니다. 인자로 전달하거나 .devagentrc.json 의 'task' 키를 설정하세요.",
           );
         }
-        await this.handleRun(undefined, { ...options, task: taskValue });
+        await this.handlePlan(taskValue, options);
+      });
+
+    // build <pageId> — Status=Approved 검증 → Implementation/Review/PR
+    this.program
+      .command("build")
+      .description("승인된 기획 기반 개발 단계 실행 (Status=Approved 검증 후 Implementation→Review→PR)")
+      .argument("[pageIdOrUrl]", "Notion page ID 또는 URL")
+      .option("-p, --project <path>", "프로젝트 경로 (생략 시 rc 의 projectPath)")
+      .option("-m, --max-iterations <number>", "최대 반복 횟수", parseInt)
+      .action(async (pageIdOrUrl: string | undefined, options: Record<string, unknown>) => {
+        const taskValue = pageIdOrUrl ?? this.rc.task;
+        if (!taskValue) {
+          throw new Error(
+            "page ID 가 필요합니다. 인자로 전달하거나 .devagentrc.json 의 'task' 키를 설정하세요.",
+          );
+        }
+        await this.handleBuild(taskValue, options);
       });
 
     // notion <subcommand> — integrations notion의 평탄화 alias
@@ -337,6 +369,72 @@ export class CLI {
 
     const projectPath = path.resolve(projectPathOpt);
     const result = await this.workflowService.execute(projectPath, task, cliOverrides);
+    this.printWorkflowResult(result);
+  }
+
+  /**
+   * `devagent plan <pageId>` 핸들러
+   * - WorkflowService.executeFromNotionPlanOnly 호출
+   * - 결과: 기획 산출물 경로 + Notion Status → "Plan Review"
+   */
+  private async handlePlan(
+    pageIdOrUrl: string,
+    options: Record<string, unknown>,
+  ): Promise<void> {
+    const projectPathOpt = (options["project"] as string | undefined) ?? this.rc.projectPath;
+    const projectPath = projectPathOpt ? path.resolve(projectPathOpt) : undefined;
+    const skipEnhancement = options["skipEnhancement"] === true;
+
+    console.log(`Notion task 기획 단계 시작: ${pageIdOrUrl}`);
+    const result = await this.workflowService.executeFromNotionPlanOnly(pageIdOrUrl, {
+      ...(projectPath ? { projectPath } : {}),
+      skipClaudeEnhancement: skipEnhancement,
+    });
+
+    console.log("");
+    console.log("✅ 기획 단계 완료");
+    console.log(`  Task        : ${result.enhancedPlan.taskTitle}`);
+    console.log(`  Workflow ID : ${result.workflowId}`);
+    console.log(`  산출물      : ${result.artifactsPath}`);
+    console.log("");
+    console.log("📋 다음 단계:");
+    console.log("  1) Notion 페이지에서 기획을 검토하세요");
+    console.log("  2) 만족하면 Status 를 \"Approved\" 로 변경하세요");
+    console.log(`  3) devagent build ${pageIdOrUrl}`);
+    console.log("");
+    console.log("  ⚠️  수정이 필요하면 devagent plan 을 재실행하세요");
+    console.log("     (기존 산출물은 .ai-workflow/archive/ 로 백업됩니다)");
+    console.log("");
+  }
+
+  /**
+   * `devagent build <pageId>` 핸들러
+   * - WorkflowService.executeFromNotionBuildOnly 호출
+   * - Status=Approved 검증 실패 시 즉시 거부
+   */
+  private async handleBuild(
+    pageIdOrUrl: string,
+    options: Record<string, unknown>,
+  ): Promise<void> {
+    const projectPathOpt = (options["project"] as string | undefined) ?? this.rc.projectPath;
+    if (!projectPathOpt) {
+      throw new Error(
+        "프로젝트 경로가 필요합니다. --project 옵션 또는 .devagentrc.json 의 'projectPath' 키를 설정하세요.",
+      );
+    }
+    const projectPath = path.resolve(projectPathOpt);
+
+    const cliOverrides: Partial<import("../types/config.js").WorkflowConfig> = {};
+    if (options["maxIterations"]) {
+      cliOverrides.maxIterations = options["maxIterations"] as number;
+    }
+
+    console.log(`Notion task 개발 단계 시작: ${pageIdOrUrl}`);
+    const result = await this.workflowService.executeFromNotionBuildOnly(pageIdOrUrl, {
+      projectPath,
+      cliOverrides,
+    });
+
     this.printWorkflowResult(result);
   }
 

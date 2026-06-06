@@ -40,17 +40,26 @@
         └────────────────────┘
 ```
 
-## 워크플로우 흐름
+## 워크플로우 흐름 (2단계 분리: plan / build)
 
+### Stage 1 — `devagent plan <pageId>`
 1. **Planning** — Claude Code가 기획서 3종 생성
    - `requirements.md` — 요구사항 분석
    - `implementation-spec.md` — 구현 명세
    - `test-scenarios.md` — 테스트 시나리오
+2. Notion Status → **Plan Review** 로 자동 전이
+3. 사용자가 Notion 에서 기획을 검토하고 직접 **Approved** 로 전이
+
+### Stage 2 — `devagent build <pageId>`
+1. Notion Status 가 `Approved` 인지 검증 (아니면 거부)
 2. **Implementation** — Codex가 코드 작성 및 사이클 커밋
-3. **Review** — Claude Code가 코드 리뷰 (APPROVED 시 종료)
+3. **Review** — Claude Code가 코드 리뷰 (APPROVED 시 종료, CHANGES_REQUESTED 시 재구현)
 4. **Finalize** — origin 있으면 push + PR, 없으면 로컬 보존
 
-각 단계에서 Notion Status 자동 전이: `To Do → Planning → In Progress → In Review → Done`
+Notion Status 자동 전이:
+`To Do → Planning → Plan Review → (사용자 승인) → Approved → In Progress → In Review → Done`
+
+> 기존 `devagent task <id>` 단일 명령은 **제거**되었습니다. plan/build 두 단계로 명시 호출하세요.
 
 ## 설치
 
@@ -91,21 +100,25 @@ npx tsc          # → dist/ 생성
 devagent notion login --token ntn_xxxxxxxxxxxx --default-db <NOTION_DB_ID>
 ```
 
-### 2. 워크플로우 실행
+### 2. 워크플로우 실행 (plan → 검토 → build)
 
-**단축형 (가장 짧음):**
 ```bash
-devagent task 376e8963-3f9d-80bb-ac3e-d8818389de61
+# Stage 1: 기획
+devagent plan 376e8963-3f9d-80bb-ac3e-d8818389de61
+
+# → Notion 페이지에서 산출물 검토 후 Status 를 "Approved" 로 변경
+
+# Stage 2: 구현 + 리뷰 + PR (Status=Approved 확인 후 실행)
+devagent build 376e8963-3f9d-80bb-ac3e-d8818389de61 --project /path/to/project
 ```
 
-**옵션 명시 (Notion task 기반):**
+**옵션 명시:**
 ```bash
-devagent --verbose run \
-  --task 376e8963-3f9d-80bb-ac3e-d8818389de61 \
-  --max-iterations 3
+devagent plan <pageId> --project /path/to/project --skip-enhancement
+devagent build <pageId> --project /path/to/project --max-iterations 5
 ```
 
-**직접 작업 지시:**
+**직접 작업 지시 (Notion 없이):**
 ```bash
 devagent run \
   --task "README에 사용법 섹션 추가하고 'docs: 사용법 추가' 메시지로 커밋"
@@ -117,23 +130,35 @@ devagent run \
 
 | 명령어 | 설명 |
 |---|---|
-| `run` | 워크플로우 실행 (전체 옵션 사용) |
+| `plan <pageId>` | Notion task 기획 단계 실행 → Status=Plan Review |
+| `build <pageId>` | Notion task 빌드 단계 실행 (Status=Approved 검증 필요) |
+| `run` | (레거시) 단일-패스 워크플로우 실행 (Notion 비연동 시 사용) |
 | `resume <project>` | 중단된 워크플로우 복구 |
 | `status [project]` | 진행 상태 조회 |
 | `list` | 등록된 프로젝트 목록 |
 | `serve` | 웹 대시보드 서버 실행 |
 
+> `devagent task <id>` 는 **제거**되었습니다. `plan` + `build` 두 단계를 사용하세요.
+
 ### 단축 명령어 (alias)
 
 | 명령어 | 동등한 명령어 | 설명 |
 |---|---|---|
-| `devagent task <id>` | `run --task <id>` | Notion task 즉시 실행. id 생략 시 `.devagentrc.json`의 task 사용 |
 | `devagent notion login --token <T>` | `integrations notion set` | 토큰 저장 |
 | `devagent notion logout` | `integrations notion clear` | 토큰 제거 |
 | `devagent notion test` | `integrations notion test` | 인증 확인 |
 | `devagent notion list` | `integrations notion tasks` | DB의 task 목록 |
 | `devagent notion status` | `integrations notion status` | 통합 상태 |
 | `devagent rc` | — | 로드된 `.devagentrc` 출력 |
+
+### `plan` / `build` 옵션
+
+| 명령어 | 옵션 | 설명 | 기본값 |
+|---|---|---|---|
+| `plan` | `-p, --project <path>` | 프로젝트 경로 override | Notion `Project Path` 속성 |
+| `plan` | `--skip-enhancement` | Claude 기획 고도화 스킵 | false |
+| `build` | `-p, --project <path>` | 프로젝트 경로 (**필수**, Notion fallback 없음) | — |
+| `build` | `-m, --max-iterations <N>` | 최대 사이클 수 | 3 |
 
 ### `run` 주요 옵션
 
@@ -194,11 +219,14 @@ devagent rc          # 어떤 소스에서 어떤 값이 적용됐는지 표시
 
 - `To Do` (또는 `Not started`)
 - `Planning`
+- `Plan Review` — `devagent plan` 완료 시 자동 설정. 사용자 검토 대기.
+- `Approved` — 사용자가 기획 승인 후 직접 설정. `devagent build` 진입 조건.
 - `In Progress`
 - `In Review`
 - `Done`
 
 > 라벨이 다르면 `integrations.json`의 `statusMapping`으로 매핑 가능.
+> `build` 명령은 Status 가 정확히 `Approved` 인 경우에만 진행하며, 그 외에는 즉시 거부합니다.
 
 ### Notion Integration Capabilities
 

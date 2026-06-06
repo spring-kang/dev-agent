@@ -164,8 +164,10 @@ codex --version
    | 속성명 | 타입 | 비고 |
    |---|---|---|
    | `Name` | Title | 작업 제목 |
-   | `Status` | Status / Select | `To Do`, `Planning`, `In Progress`, `In Review`, `Done` |
+   | `Status` | Status / Select | `To Do`, `Planning`, `Plan Review`, `Approved`, `In Progress`, `In Review`, `Done` |
    | `Project Path` | Rich text | 작업 대상 로컬 경로 |
+
+   > `Plan Review` 와 `Approved` 는 plan/build 분리에 필요한 신규 옵션입니다.
 3. **DB 우상단 `⋯` → `Connections` → dev-agent Integration 추가**
 
 ### C. DB ID 추출
@@ -232,25 +234,29 @@ Properties:
 - Status: `To Do`
 - Project Path: `/tmp/dev-agent-test`
 
-### 실행
+### 실행 (plan → 검토 → build)
 
 ```bash
-# 글로벌 등록된 경우 (어디서든 가능)
-devagent task <NOTION_PAGE_ID>
+# Stage 1: 기획
+devagent plan <NOTION_PAGE_ID>
+#  → Notion Status 가 "Plan Review" 로 전환됨
+#  → 페이지 본문/코멘트에 기획 산출물 게시
+```
 
-# 옵션 명시
-devagent --verbose run --task <NOTION_PAGE_ID> --max-iterations 3
+→ Notion 페이지에서 기획서 3종을 검토하고 Status 를 **수동으로 `Approved`** 로 변경.
 
-# 글로벌 미등록 시
-node /path/to/dev-agent/dist/index.js --verbose run \
-  --task <NOTION_PAGE_ID> \
-  --max-iterations 3
+```bash
+# Stage 2: 구현 + 리뷰 + PR
+devagent build <NOTION_PAGE_ID> --project /tmp/dev-agent-test
+#  → Status 검증 후 Implementation → Review → PR
 ```
 
 성공 시:
-- ✅ Notion Status가 `Done`으로 변경
+- ✅ Notion Status: `To Do → Planning → Plan Review → (사용자 승인) → Approved → In Progress → In Review → Done`
 - ✅ README에 라인 추가됨
 - ✅ git 커밋 메시지가 spec과 일치
+
+> `build` 는 `--project` 가 **필수**입니다 (Notion `Project Path` 자동 fallback 없음 — 잘못된 경로로 실수 방지).
 
 ---
 
@@ -294,7 +300,10 @@ node /path/to/dev-agent/dist/index.js --verbose run \
 - [ ] DB에 Status / Project Path 속성 추가 + Integration 연결
 - [ ] `devagent notion login --token <T> --default-db <ID>`
 - [ ] (선택) `.devagentrc.json`으로 기본값 저장
-- [ ] 테스트 티켓으로 스모크 테스트 (`devagent task <ID>`)
+- [ ] 테스트 티켓으로 스모크 테스트:
+  - [ ] `devagent plan <ID>` → Status=Plan Review 확인
+  - [ ] Notion 에서 Status 를 Approved 로 수동 전환
+  - [ ] `devagent build <ID> --project <path>` → 완료
 
 ---
 
@@ -340,9 +349,11 @@ claude --print "ok" --output-format text --dangerously-skip-permissions
 devagent notion test
 # → "✅ Notion 인증 성공: <계정명>"
 
-# 7. 첫 워크플로우 실행
-devagent notion list                    # 가능한 task 조회
-devagent task <NOTION_PAGE_ID>          # 실행
+# 7. 첫 워크플로우 실행 (plan → 검토 → build)
+devagent notion list                                       # 가능한 task 조회
+devagent plan <NOTION_PAGE_ID>                             # ① 기획 → Plan Review
+# (Notion 에서 Status 를 "Approved" 로 수동 전환)
+devagent build <NOTION_PAGE_ID> --project /path/to/project # ② 구현 + 리뷰 + PR
 ```
 
 이 7단계를 다 거치면 **미인증으로 인한 실패는 사실상 발생하지 않습니다**.
@@ -370,7 +381,7 @@ devagent task <NOTION_PAGE_ID>          # 실행
 
 기획 고도화만 스킵 (Claude 호출 절감, 단 Planning 본체와 Review는 여전히 필요):
 ```bash
-devagent task <ID> --skip-enhancement
+devagent plan <ID> --skip-enhancement
 ```
 
 > ⚠️ Claude/Codex **둘 다 완전 우회는 불가능**합니다. 두 CLI 없이는 dev-agent 자체가 동작하지 않습니다.

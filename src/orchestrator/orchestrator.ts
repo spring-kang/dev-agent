@@ -38,6 +38,132 @@ export class Orchestrator {
   ) {}
 
   /**
+   * Plan 단계만 실행 (Notion task → Planning → 산출물 저장)
+   * - 새 workflowId 발급
+   * - Git 브랜치 초기화는 수행하지 않음 (build 단계에서 처리)
+   * - state.planningCompleted = true 설정 후 저장
+   */
+  async executePlanOnly(
+    request: WorkflowRequest,
+  ): Promise<{ workflowId: string; artifactsPath: string; state: WorkflowState }> {
+    const workflowId = crypto.randomUUID();
+    this.logger.setWorkflowId(workflowId);
+    this.logger.info(`기획 단계 시작: ${request.taskDescription}`);
+
+    this.safeEmit("workflow:start", {
+      type: "workflow:start",
+      workflowId,
+      projectPath: request.projectPath,
+      taskDescription: request.taskDescription,
+      timestamp: new Date().toISOString(),
+    });
+
+    const state: WorkflowState = {
+      workflowId,
+      projectPath: request.projectPath,
+      projectName: request.projectPath.split("/").pop() ?? "unknown",
+      taskDescription: request.taskDescription,
+      status: "running",
+      currentPhase: "initializing",
+      currentCycle: 0,
+      maxIterations: request.config.maxIterations,
+      branchName: "",
+      artifacts: {},
+      reviewHistory: [],
+      startedAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      planningCompleted: false,
+    };
+
+    await this.stateManager.save(state);
+
+    const context: CycleContext = {
+      cycleNumber: 1,
+      projectPath: request.projectPath,
+      taskDescription: request.taskDescription,
+      artifacts: state.artifacts,
+      config: request.config,
+      stage: "plan-only",
+    };
+
+    state.currentCycle = 1;
+    const planOnly = await this.pipelineService.executePlanOnly(context, state);
+    state.artifacts = planOnly.artifacts;
+    state.currentPhase = "plan_review";
+    state.planningCompleted = true;
+    state.updatedAt = new Date().toISOString();
+    await this.stateManager.save(state);
+
+    this.logger.info(`기획 단계 완료. Notion Status: Plan Review 로 전이 권장.`);
+
+    return {
+      workflowId,
+      artifactsPath:
+        planOnly.artifacts.implementationSpecPath ??
+        `${request.projectPath}/.ai-workflow/current/artifacts`,
+      state,
+    };
+  }
+
+  /**
+   * Build 단계만 실행 (기존 state.json 복원 → Implementation/Review/PR)
+   * 호출 전 WorkflowService 에서 Notion Status="Approved" 검증을 수행해야 한다.
+   */
+  async executeBuildOnly(projectPath: string): Promise<WorkflowResult> {
+    const state = await this.stateManager.restore(projectPath);
+    if (!state) {
+      throw new OrchestratorError(
+        "기획 산출물이 없습니다. 먼저 `devagent plan <pageId>` 를 실행하세요.",
+        "unknown",
+        "recoverable",
+      );
+    }
+
+    if (state.planningCompleted !== true) {
+      throw new OrchestratorError(
+        "기획이 완료되지 않은 워크플로우입니다.",
+        state.workflowId,
+        "recoverable",
+      );
+    }
+
+    this.logger.setWorkflowId(state.workflowId);
+    this.logger.info(`개발 단계 시작: ${state.taskDescription}`);
+
+    state.status = "running";
+    state.currentPhase = "approved";
+    state.planApprovedAt = new Date().toISOString();
+    await this.stateManager.save(state);
+
+    // build-only 는 새 workflow 의 git 초기화가 필요 → 미설정 시 초기화
+    if (!state.branchName) {
+      const gitInit = await this.gitService.initWorkflow(
+        state.projectPath,
+        state.taskDescription,
+        "ai",
+      );
+      state.branchName = gitInit.branchName;
+      await this.stateManager.save(state);
+    }
+
+    const request: WorkflowRequest = {
+      projectPath: state.projectPath,
+      taskDescription: state.taskDescription,
+      config: {
+        maxIterations: state.maxIterations,
+        branchPrefix: "ai",
+        logLevel: "info",
+        claudeTimeout: 300_000,
+        codexTimeout: 600_000,
+        prIncludeReviewSummary: true,
+        autoCommit: true,
+      },
+    };
+
+    return this.runCycleLoop(request, state, { stage: "build-only" });
+  }
+
+  /**
    * 워크플로우 실행
    */
   async execute(request: WorkflowRequest): Promise<WorkflowResult> {
@@ -222,17 +348,27 @@ export class Orchestrator {
   private async runCycleLoop(
     request: WorkflowRequest,
     state: WorkflowState,
+    options?: { stage?: "full" | "build-only" },
   ): Promise<WorkflowResult> {
     const start = performance.now();
+    const loopStage = options?.stage ?? "full";
+    // build-only 는 첫 사이클에서 Planning 을 스킵하고 기존 산출물을 사용한다.
+    // 사이클 번호는 기존 state 의 currentCycle 부터 이어 쓰되 최소 1 보장.
     let cycleNumber = state.currentCycle > 0 ? state.currentCycle : 1;
     let previousFeedback = state.reviewHistory.length > 0
       ? state.reviewHistory[state.reviewHistory.length - 1]
       : undefined;
     let reworkScope: "partial" | "full" | undefined;
+    let isFirstCycleInLoop = true;
 
     while (cycleNumber <= request.config.maxIterations) {
       state.currentCycle = cycleNumber;
       await this.stateManager.save(state);
+
+      // build-only 모드는 첫 사이클만 build-only stage 로 실행하고,
+      // 이후 재시도 사이클에서는 정상 full 사이클로 동작 (Planning 재실행).
+      const cycleStage =
+        loopStage === "build-only" && isFirstCycleInLoop ? "build-only" : "full";
 
       const context: CycleContext = {
         cycleNumber,
@@ -242,9 +378,11 @@ export class Orchestrator {
         reworkScope,
         artifacts: state.artifacts,
         config: request.config,
+        stage: cycleStage,
       };
 
       const cycleResult = await this.pipelineService.executeCycle(context, state);
+      isFirstCycleInLoop = false;
 
       // 산출물 업데이트
       state.artifacts = cycleResult.artifacts;

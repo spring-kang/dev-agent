@@ -285,6 +285,23 @@ export class CliValidationError extends AppError {
   }
 }
 
+export class PipelineServiceError extends AppError {
+  readonly code = "PIPELINE_SERVICE_ERROR" as const;
+  readonly severity: "critical" | "recoverable";
+  readonly stage?: string;
+
+  constructor(
+    message: string,
+    severity: "critical" | "recoverable" = "recoverable",
+    stage?: string,
+    cause?: Error,
+  ) {
+    super(message, cause);
+    this.severity = severity;
+    this.stage = stage;
+  }
+}
+
 export class WorkflowServiceError extends AppError {
   readonly code = "WORKFLOW_SERVICE_ERROR" as const;
   readonly severity: "critical" | "recoverable";
@@ -329,6 +346,7 @@ export const ERROR_HINTS: Record<string, string> = {
   WORKSPACE_ERROR: "프로젝트 경로가 올바른지 확인하세요",
   STATE_ERROR: "'dev-agent resume'로 복구하거나 새로 시작하세요",
   ORCHESTRATOR_ERROR: "'dev-agent resume'로 재시작해보세요",
+  PIPELINE_SERVICE_ERROR: "기획/개발 단계 입력 상태를 확인하세요",
   PARALLEL_CONFLICT: "각 프로젝트 경로가 고유한지 확인하세요",
   PREFLIGHT_ERROR: "필수 조건을 충족한 후 다시 시도하세요",
   CLI_VALIDATION_ERROR: "'dev-agent --help'로 사용법을 확인하세요",

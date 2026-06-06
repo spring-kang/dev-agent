@@ -137,8 +137,20 @@ export class WorkspaceManager {
 
   /**
    * 워크플로우 디렉토리 초기화 (멱등)
+   *
+   * @param projectPath 프로젝트 루트 경로
+   * @param options.archiveExisting true일 때 기존 current/ 가 있으면
+   *   archive/<workflowId>-<ISO_TS>/ 로 이동 후 새 current/ 생성.
+   *   workflowId 는 state.json 에서 읽어 사용하며, 없으면 "unknown" fallback.
    */
-  async initWorkflowDirs(projectPath: string): Promise<void> {
+  async initWorkflowDirs(
+    projectPath: string,
+    options?: { archiveExisting?: boolean },
+  ): Promise<void> {
+    if (options?.archiveExisting) {
+      await this.archiveCurrentIfExists(projectPath);
+    }
+
     const dirs = [
       path.join(projectPath, WORKFLOW_DIRS.root),
       path.join(projectPath, WORKFLOW_DIRS.current),
@@ -150,6 +162,40 @@ export class WorkspaceManager {
     for (const dir of dirs) {
       await fs.mkdir(dir, { recursive: true });
     }
+  }
+
+  /**
+   * 기존 current/ 디렉토리가 있으면 archive/<workflowId>-<ts>/ 로 이동
+   * state.json 이 없거나 workflowId 추출 실패 시 "unknown" 으로 fallback.
+   */
+  private async archiveCurrentIfExists(projectPath: string): Promise<void> {
+    const currentDir = path.join(projectPath, WORKFLOW_DIRS.current);
+    const exists = await this.checkFileExists(currentDir);
+    if (!exists) return;
+
+    // workflowId 추출 시도
+    let workflowId = "unknown";
+    try {
+      const stateRaw = await fs.readFile(
+        path.join(currentDir, "state.json"),
+        "utf-8",
+      );
+      const state = JSON.parse(stateRaw) as { workflowId?: string };
+      if (typeof state.workflowId === "string" && state.workflowId.trim()) {
+        workflowId = state.workflowId.trim();
+      }
+    } catch {
+      // state.json 없음/파싱 실패 → unknown 으로 진행
+    }
+
+    const ts = new Date().toISOString().replace(/[:.]/g, "-");
+    const archiveRoot = path.join(projectPath, WORKFLOW_DIRS.archive);
+    await fs.mkdir(archiveRoot, { recursive: true });
+
+    const targetDir = path.join(archiveRoot, `${workflowId}-${ts}`);
+    await fs.rename(currentDir, targetDir);
+
+    this.logger.info(`기존 기획을 ${targetDir} 로 백업했습니다.`);
   }
 
   /**

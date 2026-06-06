@@ -72,6 +72,32 @@ export class NotionStatusSync {
     this.prUrls.delete(workflowId);
   }
 
+  /**
+   * 지정 페이지의 현재 Status 옵션명을 Notion 에서 조회한다.
+   * WorkflowService.executeFromNotionBuildOnly 가 "Approved" 검증 시 호출.
+   */
+  async fetchCurrentStatus(pageId: string): Promise<string> {
+    return this.notion.getStatus(pageId);
+  }
+
+  /**
+   * Notion Status 옵션을 직접 설정한다 (이벤트 기반 동기화와 무관).
+   * 실패해도 워크플로우는 차단하지 않고 warn 로그만 남긴다.
+   * WorkflowService.executeFromNotionPlanOnly 가 "Plan Review" 전이 시 호출.
+   */
+  async setStatusDirect(pageId: string, statusName: string): Promise<void> {
+    try {
+      await this.notion.updateStatus(pageId, statusName);
+      this.logger.info(
+        `Notion 상태 직접 갱신: page=${pageId} → "${statusName}"`,
+      );
+    } catch (err) {
+      this.logger.warn(
+        `Notion 상태 직접 갱신 실패 (page=${pageId}, status=${statusName}): ${(err as Error).message}`,
+      );
+    }
+  }
+
   start(): void {
     this.eventEmitter.on("phase:start", this.handlers.phaseStart);
     this.eventEmitter.on("phase:complete", this.handlers.phaseComplete);

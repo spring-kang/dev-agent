@@ -118,6 +118,8 @@ export interface EnhancedPlan {
 export const DEFAULT_NOTION_STATUS_MAPPING: Record<WorkflowPhase, string> = {
   initializing: "To Do",
   planning: "Planning",
+  plan_review: "Plan Review",
+  approved: "Approved",
   implementation: "In Progress",
   review: "In Review",
   pr_creation: "In Review",

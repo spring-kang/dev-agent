@@ -185,6 +185,26 @@ export class NotionClient {
     }
   }
 
+  // ── 상태 조회 ──
+
+  /**
+   * DB row 의 현재 Status 옵션명을 조회한다.
+   * 페이지가 없거나 Status 속성이 없으면 빈 문자열 반환.
+   * propertyMapping.status 키 사용 (사용자 정의 속성명 지원).
+   */
+  async getStatus(pageId: string): Promise<string> {
+    const id = this.normalizeId(pageId);
+    try {
+      const page = await this.request<NotionPageObject>(`/pages/${id}`);
+      return this.extractStatus(page);
+    } catch (err) {
+      if (err instanceof NotionApiError && err.status === 404) {
+        return "";
+      }
+      throw err;
+    }
+  }
+
   // ── 상태 업데이트 ──
 
   /**
