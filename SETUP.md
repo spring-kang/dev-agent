@@ -298,6 +298,85 @@ node /path/to/dev-agent/dist/index.js --verbose run \
 
 ---
 
+## 🚀 권장 워크플로우 (새 PC 처음부터 끝까지)
+
+> dev-agent는 외부 CLI(Claude Code, Codex)를 spawn해서 사용합니다.
+> **세 가지 인증(Claude, Codex, Notion)이 모두 살아있어야** 워크플로우가 끝까지 돕니다.
+
+### 역할 분담
+
+| 단계 | 사용 CLI | 미인증 시 영향 |
+|---|---|---|
+| Planning (기획) | `claude` | Planning 단계에서 즉시 실패 |
+| Planning 고도화 | `claude` | 동일 (스킵 가능: `--skip-enhancement`) |
+| Implementation (구현) | `codex` | Implementation 단계에서 실패 |
+| Review (리뷰) | `claude` | Review 단계에서 실패 |
+| Notion 동기화 | dev-agent 내부 | 토큰 없으면 동기화만 스킵 (본 작업은 계속) |
+
+### 7단계 워크플로우
+
+```bash
+# 1. dev-agent 설치 (저장소 clone 후)
+./setup.sh
+
+# 2. Claude Code 인증 (Anthropic OAuth — 브라우저 열림)
+claude
+# → 로그인 완료 후 종료. ~/.claude/에 토큰 저장됨
+
+# 3. Codex CLI 인증
+codex login
+# → OpenAI 계정 OAuth 또는 API key 입력
+
+# 4. Notion 토큰 등록
+devagent notion login \
+  --token ntn_xxxxxxxxxxxx \
+  --default-db <DB_ID>
+
+# 5. Claude 동작 확인
+claude --print "ok" --output-format text --dangerously-skip-permissions
+# → "ok" 비슷한 응답이 오면 정상
+
+# 6. Notion 동작 확인
+devagent notion test
+# → "✅ Notion 인증 성공: <계정명>"
+
+# 7. 첫 워크플로우 실행
+devagent notion list                    # 가능한 task 조회
+devagent task <NOTION_PAGE_ID>          # 실행
+```
+
+이 7단계를 다 거치면 **미인증으로 인한 실패는 사실상 발생하지 않습니다**.
+
+### 인증 토큰 저장 위치
+
+| 인증 | 저장 위치 | 만료 |
+|---|---|---|
+| Claude Code | `~/.claude/` | 만료/revoke 전까지 영구 |
+| Codex | `~/.codex/` 또는 `~/.config/codex/` | 동일 |
+| Notion | `~/.dev-agent/integrations.json` | revoke 또는 수동 `devagent notion logout` 전까지 |
+
+한 번 인증해두면 새 PC를 쓰기 전까지 다시 로그인할 필요 없습니다.
+
+### 인증이 끊겼을 때 증상
+
+- **Claude 미인증**: `Planning phase failed: claude exited with code 1: Authentication error...`
+- **Codex 미인증**: `Implementation phase failed: codex exited with code 1: Not logged in...`
+- **Notion 미인증**: 워크플로우는 진행되지만 Status/본문 동기화가 스킵됨 (로그에 경고)
+
+→ 실패 시 워크플로우는 `failed` 상태로 종료. Notion Status는 마지막 성공 단계에 머무릅니다.
+→ 재인증 후 `devagent resume <project>` 로 이어서 가능.
+
+### 부분 우회 옵션
+
+기획 고도화만 스킵 (Claude 호출 절감, 단 Planning 본체와 Review는 여전히 필요):
+```bash
+devagent task <ID> --skip-enhancement
+```
+
+> ⚠️ Claude/Codex **둘 다 완전 우회는 불가능**합니다. 두 CLI 없이는 dev-agent 자체가 동작하지 않습니다.
+
+---
+
 ## 🔗 관련 문서
 
 - [README.md](./README.md) — 프로젝트 개요 및 CLI 명령어
