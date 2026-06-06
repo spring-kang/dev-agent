@@ -82,48 +82,103 @@ npx tsc          # → dist/ 생성
 
 ## 빠른 시작
 
+> `./setup.sh` 실행 후에는 `devagent` 명령어가 전역으로 등록됩니다.
+> (또는 `node dist/index.js`로 대체 가능)
+
 ### 1. Notion Integration 등록 (선택)
 
 ```bash
-node dist/index.js integrations notion set \
-  --token secret_xxxxxxxxxxxx \
-  --database-id <NOTION_DB_ID>
+devagent notion login --token ntn_xxxxxxxxxxxx --default-db <NOTION_DB_ID>
 ```
 
 ### 2. 워크플로우 실행
 
-**Notion task 기반:**
+**단축형 (가장 짧음):**
 ```bash
-node dist/index.js --verbose run \
+devagent task 376e8963-3f9d-80bb-ac3e-d8818389de61
+```
+
+**옵션 명시 (Notion task 기반):**
+```bash
+devagent --verbose run \
   --task 376e8963-3f9d-80bb-ac3e-d8818389de61 \
   --max-iterations 3
 ```
 
 **직접 작업 지시:**
 ```bash
-node dist/index.js run \
+devagent run \
   --task "README에 사용법 섹션 추가하고 'docs: 사용법 추가' 메시지로 커밋"
 ```
 
 ## CLI 명령어
 
+### 메인
+
 | 명령어 | 설명 |
 |---|---|
-| `run` | 워크플로우 실행 |
-| `resume` | 중단된 워크플로우 복구 |
-| `status` | 진행 상태 조회 |
-| `integrations notion set/show/clear` | Notion 통합 설정 |
+| `run` | 워크플로우 실행 (전체 옵션 사용) |
+| `resume <project>` | 중단된 워크플로우 복구 |
+| `status [project]` | 진행 상태 조회 |
+| `list` | 등록된 프로젝트 목록 |
 | `serve` | 웹 대시보드 서버 실행 |
+
+### 단축 명령어 (alias)
+
+| 명령어 | 동등한 명령어 | 설명 |
+|---|---|---|
+| `devagent task <id>` | `run --task <id>` | Notion task 즉시 실행. id 생략 시 `.devagentrc.json`의 task 사용 |
+| `devagent notion login --token <T>` | `integrations notion set` | 토큰 저장 |
+| `devagent notion logout` | `integrations notion clear` | 토큰 제거 |
+| `devagent notion test` | `integrations notion test` | 인증 확인 |
+| `devagent notion list` | `integrations notion tasks` | DB의 task 목록 |
+| `devagent notion status` | `integrations notion status` | 통합 상태 |
+| `devagent rc` | — | 로드된 `.devagentrc` 출력 |
 
 ### `run` 주요 옵션
 
 | 옵션 | 설명 | 기본값 |
 |---|---|---|
-| `--task <id\|text>` | Notion Page ID 또는 작업 설명 | 필수 |
-| `--project-path <path>` | 작업 대상 경로 | Notion 속성 또는 cwd |
+| `--task <id\|text>` | Notion Page ID 또는 작업 설명 | 필수 (rc로도 가능) |
+| `--project <path>` | 작업 대상 경로 | Notion 속성 또는 cwd |
 | `--max-iterations <N>` | 최대 사이클 수 | 3 |
 | `--verbose` | 상세 로그 | false |
-| `--skip-claude-enhancement` | 기획 고도화 단계 스킵 | false |
+| `--skip-enhancement` | 기획 고도화 단계 스킵 | false |
+
+## `.devagentrc.json` (기본값 저장)
+
+자주 쓰는 옵션을 프로젝트 루트(또는 상위 디렉토리)나 `~/.dev-agent/devagentrc.json`에 저장해두면 매번 옵션을 지정하지 않아도 됩니다.
+
+**우선순위 (높은 → 낮은):**
+1. CLI 옵션 (`--task 등`)
+2. 환경변수 `DEVAGENT_*`
+3. 프로젝트 `.devagentrc.json` (cwd 기준 walk-up)
+4. 글로벌 `~/.dev-agent/devagentrc.json`
+
+**지원 키:**
+```json
+{
+  "task": "376e8963-3f9d-80bb-ac3e-d8818389de61",
+  "projectPath": "/Users/me/projects/foo",
+  "maxIterations": 3,
+  "verbose": true,
+  "skipEnhancement": false,
+  "notion": { "defaultDatabaseId": "<DB_ID>" }
+}
+```
+
+**환경변수 매핑:**
+- `DEVAGENT_TASK`
+- `DEVAGENT_PROJECT_PATH`
+- `DEVAGENT_MAX_ITERATIONS`
+- `DEVAGENT_VERBOSE` (1/true)
+- `DEVAGENT_SKIP_ENHANCEMENT` (1/true)
+- `DEVAGENT_DEFAULT_DB`
+
+**확인:**
+```bash
+devagent rc          # 어떤 소스에서 어떤 값이 적용됐는지 표시
+```
 
 ## Notion DB 구성
 

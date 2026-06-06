@@ -87,6 +87,30 @@ cd ..
 node dist/index.js --help
 ```
 
+### 글로벌 명령어 등록 (선택, 권장)
+
+`./setup.sh`를 사용하면 자동으로 다음이 실행되어 어디서든 `devagent` 명령어를 쓸 수 있습니다.
+
+```bash
+npm install -g .   # 'devagent' / 'dev-agent' 둘 다 PATH에 등록
+devagent --help
+```
+
+권한 문제로 실패하면:
+```bash
+# 옵션 1: sudo
+sudo npm install -g .
+
+# 옵션 2: 사용자 prefix 사용 (권장)
+mkdir -p ~/.npm-global
+npm config set prefix ~/.npm-global
+echo 'export PATH=~/.npm-global/bin:$PATH' >> ~/.zshrc   # 또는 ~/.bashrc
+source ~/.zshrc
+npm install -g .
+```
+
+스킵하려면: `./setup.sh --no-global`
+
 ---
 
 ## 4️⃣ 외부 에이전트 CLI 설치 & 인증
@@ -155,9 +179,15 @@ https://notion.so/workspace/375e89633f9d809db9c3eea35188b99d?v=...
 ### D. dev-agent에 등록
 
 ```bash
+# 글로벌 등록을 한 경우 (권장)
+devagent notion login \
+  --token ntn_xxxxxxxxxxxx \
+  --default-db 375e89633f9d809db9c3eea35188b99d
+
+# 또는 글로벌 미등록 시
 node dist/index.js integrations notion set \
   --token ntn_xxxxxxxxxxxx \
-  --database-id 375e89633f9d809db9c3eea35188b99d
+  --default-db 375e89633f9d809db9c3eea35188b99d
 ```
 
 → `~/.dev-agent/integrations.json`에 저장됨 (이 파일은 git에 절대 올라가지 않음)
@@ -165,7 +195,7 @@ node dist/index.js integrations notion set \
 ### E. 등록 확인
 
 ```bash
-node dist/index.js integrations notion show
+devagent notion status   # 또는 'devagent notion test' 로 인증 확인
 ```
 
 ---
@@ -205,6 +235,13 @@ Properties:
 ### 실행
 
 ```bash
+# 글로벌 등록된 경우 (어디서든 가능)
+devagent task <NOTION_PAGE_ID>
+
+# 옵션 명시
+devagent --verbose run --task <NOTION_PAGE_ID> --max-iterations 3
+
+# 글로벌 미등록 시
 node /path/to/dev-agent/dist/index.js --verbose run \
   --task <NOTION_PAGE_ID> \
   --max-iterations 3
@@ -250,13 +287,14 @@ node /path/to/dev-agent/dist/index.js --verbose run \
 
 - [ ] Node.js 18+, git 설치
 - [ ] `git clone git@github.com:spring-kang/dev-agent.git`
-- [ ] `./setup.sh` 실행 (또는 `npm install && npx tsc`)
+- [ ] `./setup.sh` 실행 (의존성 + 빌드 + 글로벌 `devagent` 등록까지 자동)
 - [ ] `npm install -g @anthropic-ai/claude-code` + 인증
 - [ ] Codex CLI 설치 + 인증
 - [ ] Notion Integration 생성 + capability 활성화
 - [ ] DB에 Status / Project Path 속성 추가 + Integration 연결
-- [ ] `node dist/index.js integrations notion set --token <T> --database-id <ID>`
-- [ ] 테스트 티켓으로 스모크 테스트
+- [ ] `devagent notion login --token <T> --default-db <ID>`
+- [ ] (선택) `.devagentrc.json`으로 기본값 저장
+- [ ] 테스트 티켓으로 스모크 테스트 (`devagent task <ID>`)
 
 ---
 

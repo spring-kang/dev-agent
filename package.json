@@ -4,7 +4,8 @@
   "description": "AI-powered development pipeline orchestrator",
   "type": "module",
   "bin": {
-    "dev-agent": "./dist/index.js"
+    "dev-agent": "./dist/index.js",
+    "devagent": "./dist/index.js"
   },
   "engines": {
     "node": ">=18.0.0"

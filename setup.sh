@@ -3,9 +3,10 @@
 #
 # 사용법:
 #   chmod +x setup.sh
-#   ./setup.sh                # 메인 + 웹 전체 빌드
+#   ./setup.sh                # 메인 + 웹 전체 빌드 + 글로벌 설치
 #   ./setup.sh --no-web       # 웹 대시보드 제외
 #   ./setup.sh --skip-claude  # Claude Code CLI 자동 설치 스킵
+#   ./setup.sh --no-global    # 글로벌 'devagent' 명령어 등록 스킵
 #
 # 자세한 가이드: SETUP.md 참조
 
@@ -32,13 +33,15 @@ log_step()  { printf "\n${BOLD}▶ %s${RESET}\n" "$*"; }
 # ── 옵션 파싱 ──
 INSTALL_WEB=true
 INSTALL_CLAUDE=true
+INSTALL_GLOBAL=true
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --no-web)        INSTALL_WEB=false ;;
     --skip-claude)   INSTALL_CLAUDE=false ;;
+    --no-global)     INSTALL_GLOBAL=false ;;
     -h|--help)
-      grep -E "^#" "$0" | sed -E "s/^# ?//" | head -10
+      grep -E "^#" "$0" | sed -E "s/^# ?//" | head -12
       exit 0
       ;;
     *)
@@ -55,7 +58,7 @@ cd "$SCRIPT_DIR"
 log_info "작업 디렉토리: $SCRIPT_DIR"
 
 # ── 1. 필수 도구 확인 ──
-log_step "1/5. 필수 도구 확인"
+log_step "1/6. 필수 도구 확인"
 
 require_cmd() {
   if ! command -v "$1" >/dev/null 2>&1; then
@@ -83,7 +86,7 @@ if [ "$NODE_MAJOR" -lt 18 ]; then
 fi
 
 # ── 2. 메인 패키지 의존성 ──
-log_step "2/5. 메인 패키지 의존성 설치"
+log_step "2/6. 메인 패키지 의존성 설치"
 
 if [ -d node_modules ]; then
   log_warn "node_modules가 이미 존재합니다. npm ci 대신 npm install로 갱신합니다."
@@ -92,7 +95,7 @@ npm install
 log_ok "메인 의존성 설치 완료 ($(ls node_modules | wc -l | tr -d ' ')개 패키지)"
 
 # ── 3. 빌드 (TypeScript → dist/) ──
-log_step "3/5. TypeScript 빌드"
+log_step "3/6. TypeScript 빌드"
 
 npx tsc
 if [ ! -f dist/index.js ]; then
@@ -103,7 +106,7 @@ log_ok "빌드 완료: dist/index.js"
 
 # ── 4. 웹 대시보드 (선택) ──
 if [ "$INSTALL_WEB" = true ]; then
-  log_step "4/5. 웹 대시보드 의존성 설치"
+  log_step "4/6. 웹 대시보드 의존성 설치"
   if [ -d web ]; then
     (cd web && npm install)
     log_ok "웹 의존성 설치 완료"
@@ -111,11 +114,37 @@ if [ "$INSTALL_WEB" = true ]; then
     log_warn "web/ 디렉토리가 없습니다. 스킵."
   fi
 else
-  log_step "4/5. 웹 대시보드 (--no-web → 스킵)"
+  log_step "4/6. 웹 대시보드 (--no-web → 스킵)"
 fi
 
-# ── 5. 외부 에이전트 CLI 확인 ──
-log_step "5/5. 외부 에이전트 CLI 확인"
+# ── 5. 글로벌 'devagent' / 'dev-agent' 명령어 등록 ──
+if [ "$INSTALL_GLOBAL" = true ]; then
+  log_step "5/6. 글로벌 명령어 등록 (npm install -g .)"
+
+  # npm prefix 권한 확인 (sudo 없이도 되는지)
+  NPM_PREFIX="$(npm config get prefix 2>/dev/null || echo '')"
+  if [ -n "$NPM_PREFIX" ] && [ ! -w "$NPM_PREFIX" ]; then
+    log_warn "npm prefix($NPM_PREFIX)에 쓰기 권한이 없습니다."
+    log_warn "수동 등록: sudo npm install -g . (또는 'npm config set prefix ~/.npm-global')"
+  else
+    if npm install -g . >/dev/null 2>&1; then
+      log_ok "글로벌 명령어 등록 완료"
+      if command -v devagent >/dev/null 2>&1; then
+        log_ok "사용 가능: 'devagent' 또는 'dev-agent'"
+      else
+        log_warn "devagent 명령이 PATH에서 보이지 않습니다. 새 셸을 열거나 PATH 설정을 확인하세요."
+      fi
+    else
+      log_warn "npm install -g . 실패 — 수동으로 'sudo npm install -g .' 또는 'npm link' 시도하세요."
+    fi
+  fi
+else
+  log_step "5/6. 글로벌 등록 (--no-global → 스킵)"
+  log_info "수동 실행 시: 'node $(pwd)/dist/index.js ...'"
+fi
+
+# ── 6. 외부 에이전트 CLI 확인 ──
+log_step "6/6. 외부 에이전트 CLI 확인"
 
 # Claude Code CLI
 if command -v claude >/dev/null 2>&1; then
@@ -149,17 +178,20 @@ ${BOLD}다음 단계:${RESET}
      ${BLUE}codex${RESET}                   # OpenAI/Codex 로그인
 
   2. Notion 통합 등록:
-     ${BLUE}node dist/index.js integrations notion set \\
-       --token ntn_xxxxxxxxxxxx \\
-       --database-id <DB_ID>${RESET}
+     ${BLUE}devagent notion login --token ntn_xxxxxxxxxxxx --default-db <DB_ID>${RESET}
 
   3. 도움말:
-     ${BLUE}node dist/index.js --help${RESET}
+     ${BLUE}devagent --help${RESET}
 
-  4. 첫 워크플로우 실행:
-     ${BLUE}node dist/index.js --verbose run \\
-       --task <NOTION_PAGE_ID> \\
-       --max-iterations 3${RESET}
+  4. 첫 워크플로우 실행 (단축형):
+     ${BLUE}devagent task <NOTION_PAGE_ID>${RESET}
+
+     또는 옵션 명시:
+     ${BLUE}devagent --verbose run --task <NOTION_PAGE_ID> --max-iterations 3${RESET}
+
+  5. (선택) .devagentrc.json으로 기본값 저장:
+     ${BLUE}echo '{ "task": "<DEFAULT_TASK_ID>", "maxIterations": 3 }' > .devagentrc.json${RESET}
+     이후 ${BLUE}devagent task${RESET} 만 입력해도 실행됨
 
 ${BOLD}자세한 가이드:${RESET} SETUP.md
 EOF

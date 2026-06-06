@@ -12,10 +12,12 @@ import type { Logger } from "../components/logger.js";
 import type { NotionConfigManager } from "../integrations/notion-config.js";
 import { formatError } from "./formatters/error-formatter.js";
 import { formatReportText } from "./formatters/report-formatter.js";
+import { loadRC, applyRCToRunOptions, type DevAgentRC } from "./rc-loader.js";
 
 export class CLI {
   private program: Command;
   private verbose = false;
+  private rc: DevAgentRC = {};
 
   constructor(
     private readonly workflowService: WorkflowService,
@@ -30,6 +32,10 @@ export class CLI {
 
   async run(argv: string[]): Promise<void> {
     try {
+      // 1. 그러파일/환경변수 사전 로딩 (CLI 옵션보다 낮은 우선순위)
+      const { rc } = await loadRC();
+      this.rc = rc;
+
       await this.program.parseAsync(argv);
     } catch (error) {
       process.stderr.write(formatError(error, this.verbose) + "\n");
@@ -39,13 +45,17 @@ export class CLI {
 
   private setupProgram(): void {
     this.program
-      .name("dev-agent")
+      .name("devagent")
       .version("1.0.0")
-      .description("AI-powered development pipeline orchestrator")
+      .description(
+        "AI-powered development pipeline orchestrator\n" +
+          "  단축 명령어: task <id>, notion (login/test/list/clear), serve",
+      )
       .option("--verbose", "상세 로그 출력")
       .option("--no-color", "색상 비활성화")
       .hook("preAction", (thisCommand) => {
-        this.verbose = thisCommand.opts()["verbose"] === true;
+        const cliVerbose = thisCommand.opts()["verbose"] === true;
+        this.verbose = cliVerbose || this.rc.verbose === true;
       });
 
     // run 커맨드
@@ -191,6 +201,92 @@ export class CLI {
       .action(async (project: string, options: Record<string, unknown>) => {
         await this.handleReport(project, options);
       });
+
+    // ── 단축 명령어 (alias) ──
+    this.setupShortcutCommands();
+  }
+
+  /**
+   * 자주 쓰는 명령어 alias.
+   * - task <id>        → run --task <id>
+   * - notion login     → integrations notion set
+   * - notion logout    → integrations notion clear
+   * - notion test      → integrations notion test
+   * - notion list      → integrations notion tasks
+   * - notion status    → integrations notion status
+   * - rc               → 현재 로드된 .devagentrc 출력
+   */
+  private setupShortcutCommands(): void {
+    // task <id> — Notion task ID/URL로 즉시 실행
+    this.program
+      .command("task")
+      .description("Notion task 실행 (run --task의 단축형). ID 생략 시 .devagentrc의 task 사용")
+      .argument("[pageIdOrUrl]", "Notion page ID 또는 URL")
+      .option("-p, --project <path>", "프로젝트 경로 override")
+      .option("-m, --max-iterations <number>", "최대 반복 횟수", parseInt)
+      .option("--skip-enhancement", "Claude 기획 고도화 건너뛰기")
+      .action(async (pageIdOrUrl: string | undefined, options: Record<string, unknown>) => {
+        const taskValue = pageIdOrUrl ?? this.rc.task;
+        if (!taskValue) {
+          throw new Error(
+            "task ID가 필요합니다. 인자로 전달하거나 .devagentrc.json의 'task' 키를 설정하세요.",
+          );
+        }
+        await this.handleRun(undefined, { ...options, task: taskValue });
+      });
+
+    // notion <subcommand> — integrations notion의 평탄화 alias
+    const notionAliasCmd = this.program
+      .command("notion")
+      .description("Notion 통합 단축 명령어 (login/logout/test/list/status)");
+
+    notionAliasCmd
+      .command("login")
+      .description("Notion 토큰 저장 (integrations notion set의 alias)")
+      .requiredOption("--token <token>", "Notion Internal Integration Token")
+      .option("--default-db <id>", "기본 Task Database ID")
+      .action(async (options: Record<string, unknown>) => {
+        await this.handleNotionSet(options);
+      });
+
+    notionAliasCmd
+      .command("logout")
+      .description("Notion 인증 제거 (integrations notion clear의 alias)")
+      .action(async () => {
+        await this.handleNotionClear();
+      });
+
+    notionAliasCmd
+      .command("test")
+      .description("Notion 인증 확인")
+      .action(async () => {
+        await this.handleNotionTest();
+      });
+
+    notionAliasCmd
+      .command("status")
+      .description("Notion 통합 상태")
+      .action(async () => {
+        await this.handleNotionStatus();
+      });
+
+    notionAliasCmd
+      .command("list")
+      .description("Notion DB에서 task 목록 조회")
+      .option("--db <id>", "Database ID")
+      .option("--status <name>", "상태 필터")
+      .option("--max <number>", "최대 개수", parseInt, 20)
+      .action(async (options: Record<string, unknown>) => {
+        await this.handleNotionListTasks(options);
+      });
+
+    // rc — 현재 로드된 .devagentrc 출력 (디버깅용)
+    this.program
+      .command("rc")
+      .description("현재 로드된 .devagentrc 설정 확인")
+      .action(async () => {
+        await this.handleShowRC();
+      });
   }
 
   // ── 커맨드 핸들러 ──
@@ -199,13 +295,17 @@ export class CLI {
     task: string | undefined,
     options: Record<string, unknown>,
   ): Promise<void> {
+    // .devagentrc/환경변수 값을 CLI 옵션에 병합 (CLI 옵션 우선)
+    const merged = applyRCToRunOptions(this.rc, options);
+
     const cliOverrides: Partial<import("../types/config.js").WorkflowConfig> = {};
 
-    if (options["maxIterations"]) {
-      cliOverrides.maxIterations = options["maxIterations"] as number;
+    if (merged["maxIterations"]) {
+      cliOverrides.maxIterations = merged["maxIterations"] as number;
     }
 
-    const notionTask = options["task"] as string | undefined;
+    const notionTask = merged["task"] as string | undefined;
+    options = merged;
 
     if (notionTask) {
       // Notion 기반 워크플로우
@@ -487,6 +587,35 @@ export class CLI {
     const cfg = this.getNotionConfig();
     await cfg.clearNotion();
     console.log("✅ Notion 인증이 제거되었습니다");
+  }
+
+  // ── rc 표시 ──
+
+  private async handleShowRC(): Promise<void> {
+    const { rc, sources } = await loadRC();
+
+    console.log("");
+    console.log("📄 .devagentrc 로드 결과");
+    console.log("");
+
+    if (sources.length === 0) {
+      console.log("  (적용된 소스 없음 — 모든 옵션은 CLI 인자로 지정해야 합니다)");
+    } else {
+      console.log("  소스 (낮은 → 높은 우선순위):");
+      for (const s of sources) {
+        console.log(`    - ${s}`);
+      }
+    }
+    console.log("");
+    console.log("  병합된 값:");
+    if (Object.keys(rc).length === 0) {
+      console.log("    (비어있음)");
+    } else {
+      console.log(JSON.stringify(rc, null, 2).replace(/^/gm, "    "));
+    }
+    console.log("");
+    console.log("  💡 우선순위: CLI 옵션 > env(DEVAGENT_*) > 프로젝트 rc > 글로벌 rc");
+    console.log("");
   }
 
   // ── 유틸리티 ──
