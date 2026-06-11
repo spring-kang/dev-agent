@@ -19,15 +19,7 @@ import type {
   WorkflowPhase,
 } from "../types/workflow.js";
 import type { PlanResult } from "../types/agent.js";
-import { PipelineServiceError } from "../types/errors.js";
 import type { PhaseStartEvent, PhaseCompleteEvent, CycleCompleteEvent } from "../types/events.js";
-
-/** plan-only 실행 결과 */
-export interface PlanOnlyResult {
-  artifacts: WorkflowArtifacts;
-  planResult: PlanResult;
-  duration: number;
-}
 
 export class PipelineService {
   constructor(
@@ -41,52 +33,26 @@ export class PipelineService {
   ) {}
 
   /**
-   * 단일 사이클 실행 (Planning → Implementation → Commit → Review → Evaluate)
-   *
-   * stage 옵션:
-   * - "full" (기본): 전체 사이클 실행
-   * - "plan-only": Planning 만 실행 후 즉시 반환 (Implementation/Review 스킵)
-   *   → CycleResult 의 reviewResult/commitSHA 가 무의미한 placeholder
-   *   → 명시적 분리 호출을 원하면 executePlanOnly() 사용 권장
-   * - "build-only": Planning 스킵, 기존 state.artifacts 의 planResult 재사용 후
-   *   Implementation 부터 시작 → reviewResult 반환
+   * 단일 사이클 실행
+   * - inlineSpec 이 있으면 Planning 스킵 → Implementation → Commit → Review
+   * - 그 외에는 Planning → Implementation → Commit → Review
    */
   async executeCycle(context: CycleContext, state: WorkflowState): Promise<CycleResult> {
-    const stage = context.stage ?? "full";
-
-    if (stage === "plan-only") {
-      // 호환을 위해 placeholder reviewResult 채워 반환
-      const planResult = await this.runPlanning(context, state);
-      const updatedArtifacts: WorkflowArtifacts = {
-        ...context.artifacts,
-        requirementsPath: planResult.requirementsPath,
-        implementationSpecPath: planResult.implementationSpecPath,
-        testScenariosPath: planResult.testScenariosPath,
-      };
-      return {
-        reviewResult: {
-          status: "APPROVED",
-          checks: [],
-          findings: [],
-          summary: "plan-only stage placeholder",
-        },
-        changedFiles: [],
-        artifacts: updatedArtifacts,
-        commitSHA: "",
-        duration: 0,
-      };
-    }
-
     const cycleStart = performance.now();
     const { cycleNumber, projectPath, artifacts } = context;
     this.logger.setCycleNumber(cycleNumber);
 
-    let planResult: PlanResult;
+    // inlineSpec 모드: Notion task 본문이 곧 implementation spec → Planning 스킵
+    const useInlineSpec = !!(context.inlineSpec && context.inlineSpec.trim().length > 0);
+
+    let planResult: PlanResult | null = null;
     let updatedArtifacts: WorkflowArtifacts = { ...artifacts };
 
-    if (stage === "build-only") {
-      // 기존 산출물에서 planResult 복원
-      planResult = this.restorePlanResultFromArtifacts(artifacts);
+    if (useInlineSpec) {
+      this.logger.info(
+        `Planning 스킵 (inline spec 사용, source=${context.inlineSpecSource ?? "(unknown)"}, ` +
+          `${context.inlineSpec!.length}자)`,
+      );
     } else {
       planResult = await this.runPlanning(context, state);
       updatedArtifacts = {
@@ -105,7 +71,12 @@ export class PipelineService {
 
     const implResult = await this.codexAgent.implement({
       projectPath,
-      implementationSpecPath: planResult.implementationSpecPath,
+      ...(useInlineSpec
+        ? {
+            inlineSpec: context.inlineSpec!,
+            inlineSpecSource: context.inlineSpecSource ?? "(inline)",
+          }
+        : { implementationSpecPath: planResult!.implementationSpecPath }),
     });
 
     const changedFiles = implResult.changedFiles;
@@ -131,8 +102,13 @@ export class PipelineService {
     const reviewRaw = await this.claudeAgent.review({
       projectPath,
       changedFiles,
-      requirementsPath: planResult.requirementsPath,
-      testScenariosPath: planResult.testScenariosPath,
+      ...(planResult?.requirementsPath ? { requirementsPath: planResult.requirementsPath } : {}),
+      ...(planResult?.testScenariosPath
+        ? { testScenariosPath: planResult.testScenariosPath }
+        : {}),
+      ...(useInlineSpec && context.inlineSpec
+        ? { inlineSpec: context.inlineSpec, inlineSpecSource: context.inlineSpecSource ?? "(inline)" }
+        : {}),
     });
 
     // ── 5. Evaluate ──
@@ -161,45 +137,7 @@ export class PipelineService {
   }
 
   /**
-   * Plan 단계만 실행 (Planning → 산출물 반환)
-   * WorkflowService.executeFromNotionPlanOnly 가 호출.
-   */
-  async executePlanOnly(
-    context: CycleContext,
-    state: WorkflowState,
-  ): Promise<PlanOnlyResult> {
-    const cycleStart = performance.now();
-    this.logger.setCycleNumber(context.cycleNumber);
-
-    const planResult = await this.runPlanning(context, state);
-
-    const updatedArtifacts: WorkflowArtifacts = {
-      ...context.artifacts,
-      requirementsPath: planResult.requirementsPath,
-      implementationSpecPath: planResult.implementationSpecPath,
-      testScenariosPath: planResult.testScenariosPath,
-    };
-
-    state.artifacts = updatedArtifacts;
-    await this.stateManager.save(state);
-
-    return {
-      planResult,
-      artifacts: updatedArtifacts,
-      duration: Math.round(performance.now() - cycleStart),
-    };
-  }
-
-  /**
-   * Build 단계만 실행 (Planning 스킵 → Implementation/Commit/Review)
-   * 기존 state.artifacts 의 plan 산출물을 재사용한다.
-   */
-  async executeBuildOnly(context: CycleContext, state: WorkflowState): Promise<CycleResult> {
-    return this.executeCycle({ ...context, stage: "build-only" }, state);
-  }
-
-  /**
-   * Planning 단계 실행 (executeCycle 과 executePlanOnly 가 공유)
+   * Planning 단계 실행
    */
   private async runPlanning(
     context: CycleContext,
@@ -224,27 +162,6 @@ export class PipelineService {
 
     this.emitPhaseComplete("planning", cycleNumber, state.workflowId, performance.now() - planStart);
     return planResult;
-  }
-
-  /**
-   * state.artifacts 에서 PlanResult 복원 (build-only 진입 시)
-   * 필수 경로 누락 시 PipelineServiceError 던진다.
-   */
-  private restorePlanResultFromArtifacts(artifacts: WorkflowArtifacts): PlanResult {
-    const { requirementsPath, implementationSpecPath, testScenariosPath } = artifacts;
-    if (!requirementsPath || !implementationSpecPath || !testScenariosPath) {
-      throw new PipelineServiceError(
-        "기획 산출물이 누락되었습니다. 먼저 `devagent plan <pageId>` 를 실행하세요.",
-        "recoverable",
-        "build-only",
-      );
-    }
-    return {
-      requirementsPath,
-      implementationSpecPath,
-      testScenariosPath,
-      summary: "restored from artifacts",
-    };
   }
 
   // ── 이벤트 발행 (에러 격리) ──

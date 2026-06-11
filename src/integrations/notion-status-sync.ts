@@ -74,7 +74,7 @@ export class NotionStatusSync {
 
   /**
    * 지정 페이지의 현재 Status 옵션명을 Notion 에서 조회한다.
-   * WorkflowService.executeFromNotionBuildOnly 가 "Approved" 검증 시 호출.
+   * WorkflowService.executeBuildFromNotion 이 "Approved" 검증 시 호출.
    */
   async fetchCurrentStatus(pageId: string): Promise<string> {
     return this.notion.getStatus(pageId);
@@ -83,7 +83,6 @@ export class NotionStatusSync {
   /**
    * Notion Status 옵션을 직접 설정한다 (이벤트 기반 동기화와 무관).
    * 실패해도 워크플로우는 차단하지 않고 warn 로그만 남긴다.
-   * WorkflowService.executeFromNotionPlanOnly 가 "Plan Review" 전이 시 호출.
    */
   async setStatusDirect(pageId: string, statusName: string): Promise<void> {
     try {

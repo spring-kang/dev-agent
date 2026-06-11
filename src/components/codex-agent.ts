@@ -29,12 +29,29 @@ export class CodexAgent implements ImplementationAgent {
 
   /**
    * 구현 단계 실행
+   * - inlineSpec 우선, 없으면 implementationSpecPath 파일에서 읽기
+   * - 둘 다 없으면 즉시 에러
    */
   async implement(request: ImplementRequest): Promise<ImplementResult> {
-    // 구현 명세 파일 읽기
-    const specContent = await fs.readFile(request.implementationSpecPath, "utf-8");
+    // 1) 명세 본문 확보 (inline 우선)
+    let specContent: string;
+    let specSourceLabel: string;
+    if (request.inlineSpec && request.inlineSpec.trim().length > 0) {
+      specContent = request.inlineSpec;
+      specSourceLabel = request.inlineSpecSource ?? "(inline)";
+      this.logger.debug(`Codex 인라인 명세 사용 (source=${specSourceLabel}, ${specContent.length}자)`);
+    } else if (request.implementationSpecPath) {
+      specContent = await fs.readFile(request.implementationSpecPath, "utf-8");
+      specSourceLabel = request.implementationSpecPath;
+    } else {
+      throw new AgentProcessError(
+        "Codex",
+        -1,
+        "구현 명세가 제공되지 않았습니다 (implementationSpecPath 또는 inlineSpec 중 하나 필요)",
+      );
+    }
 
-    // 명세에서 권장 커밋 메시지 추출 (자동 일괄 메시지 덮어쓰기 방지)
+    // 2) 명세에서 권장 커밋 메시지 추출 (자동 일괄 메시지 덮어쓰기 방지)
     const suggestedCommitMessage = this.extractCommitMessage(specContent);
     if (suggestedCommitMessage) {
       this.logger.debug(`명세에서 추출한 커밋 메시지: ${suggestedCommitMessage}`);
@@ -42,7 +59,7 @@ export class CodexAgent implements ImplementationAgent {
 
     const prompt = `다음 구현 명세에 따라 코드를 작성해주세요.
 
-구현 명세 파일: ${request.implementationSpecPath}
+구현 명세 출처: ${specSourceLabel}
 
 명세 내용:
 ${specContent}

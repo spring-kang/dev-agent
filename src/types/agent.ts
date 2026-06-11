@@ -23,7 +23,21 @@ export interface PlanResult {
 
 export interface ImplementRequest {
   projectPath: string;
-  implementationSpecPath: string;
+  /**
+   * 구현 명세 파일 경로 (로컬 plan 산출물이 있을 때).
+   * inlineSpec이 함께 주어지면 inlineSpec 우선.
+   * 둘 다 없으면 에러.
+   */
+  implementationSpecPath?: string;
+  /**
+   * 인라인 명세 본문 (Notion task 본문을 그대로 넘길 때).
+   * implementationSpecPath보다 우선 적용.
+   */
+  inlineSpec?: string;
+  /**
+   * inlineSpec 출처 식별 (로그/오류 메시지용, 예: "notion:abc123").
+   */
+  inlineSpecSource?: string;
 }
 
 export interface ImplementResult {
@@ -46,6 +60,9 @@ export interface ReviewRequest {
   changedFiles: string[];
   requirementsPath?: string;
   testScenariosPath?: string;
+  /** Notion 본문 등 인라인 구현 명세 (requirementsPath 없을 때 review 기준 문서) */
+  inlineSpec?: string;
+  inlineSpecSource?: string;
 }
 
 // ── Process 관리 ──

@@ -95,6 +95,13 @@ export interface WorkflowRequest {
   projectPath: string;
   taskDescription: string;
   config: WorkflowConfig;
+  /**
+   * Notion task 본문 등 외부 명세를 그대로 Codex에 전달할 때 사용.
+   * 값이 있으면 Planning 단계를 스킵하고 inlineSpec을 implementation spec으로 사용.
+   */
+  inlineSpec?: string;
+  /** inlineSpec 출처 라벨 (로그/오류 메시지용, 예: "notion:abc123") */
+  inlineSpecSource?: string;
 }
 
 export interface WorkflowResult {
@@ -125,8 +132,6 @@ export interface WorkflowStatus {
 
 // ── 사이클 ──
 
-export type PipelineStage = "full" | "plan-only" | "build-only";
-
 export interface CycleContext {
   cycleNumber: number;
   projectPath: string;
@@ -135,8 +140,12 @@ export interface CycleContext {
   reworkScope?: "partial" | "full";
   artifacts: WorkflowArtifacts;
   config: WorkflowConfig;
-  /** plan/build 분리 실행 시 단계 지정 (기본 full) */
-  stage?: PipelineStage;
+  /**
+   * Notion task 본문을 그대로 Codex에 전달할 때 사용 (inline implementation spec).
+   * 값이 있으면 Planning 스킵.
+   */
+  inlineSpec?: string;
+  inlineSpecSource?: string;
 }
 
 export interface CycleResult {

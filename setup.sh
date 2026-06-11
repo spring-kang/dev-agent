@@ -3,10 +3,11 @@
 #
 # 사용법:
 #   chmod +x setup.sh
-#   ./setup.sh                # 메인 + 웹 전체 빌드 + 글로벌 설치
+#   ./setup.sh                # 메인 + 웹 전체 빌드 + 글로벌 설치 + 기획 스킬 설치
 #   ./setup.sh --no-web       # 웹 대시보드 제외
 #   ./setup.sh --skip-claude  # Claude Code CLI 자동 설치 스킵
 #   ./setup.sh --no-global    # 글로벌 'devagent' 명령어 등록 스킵
+#   ./setup.sh --no-skill     # devagent-planner 스킬 글로벌 설치 스킵
 #
 # 자세한 가이드: SETUP.md 참조
 
@@ -34,12 +35,14 @@ log_step()  { printf "\n${BOLD}▶ %s${RESET}\n" "$*"; }
 INSTALL_WEB=true
 INSTALL_CLAUDE=true
 INSTALL_GLOBAL=true
+INSTALL_SKILL=true
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --no-web)        INSTALL_WEB=false ;;
     --skip-claude)   INSTALL_CLAUDE=false ;;
     --no-global)     INSTALL_GLOBAL=false ;;
+    --no-skill)      INSTALL_SKILL=false ;;
     -h|--help)
       grep -E "^#" "$0" | sed -E "s/^# ?//" | head -12
       exit 0
@@ -58,7 +61,7 @@ cd "$SCRIPT_DIR"
 log_info "작업 디렉토리: $SCRIPT_DIR"
 
 # ── 1. 필수 도구 확인 ──
-log_step "1/6. 필수 도구 확인"
+log_step "1/7. 필수 도구 확인"
 
 require_cmd() {
   if ! command -v "$1" >/dev/null 2>&1; then
@@ -86,7 +89,7 @@ if [ "$NODE_MAJOR" -lt 18 ]; then
 fi
 
 # ── 2. 메인 패키지 의존성 ──
-log_step "2/6. 메인 패키지 의존성 설치"
+log_step "2/7. 메인 패키지 의존성 설치"
 
 if [ -d node_modules ]; then
   log_warn "node_modules가 이미 존재합니다. npm ci 대신 npm install로 갱신합니다."
@@ -95,7 +98,7 @@ npm install
 log_ok "메인 의존성 설치 완료 ($(ls node_modules | wc -l | tr -d ' ')개 패키지)"
 
 # ── 3. 빌드 (TypeScript → dist/) ──
-log_step "3/6. TypeScript 빌드"
+log_step "3/7. TypeScript 빌드"
 
 npx tsc
 if [ ! -f dist/index.js ]; then
@@ -106,7 +109,7 @@ log_ok "빌드 완료: dist/index.js"
 
 # ── 4. 웹 대시보드 (선택) ──
 if [ "$INSTALL_WEB" = true ]; then
-  log_step "4/6. 웹 대시보드 의존성 설치"
+  log_step "4/7. 웹 대시보드 의존성 설치"
   if [ -d web ]; then
     (cd web && npm install)
     log_ok "웹 의존성 설치 완료"
@@ -114,12 +117,12 @@ if [ "$INSTALL_WEB" = true ]; then
     log_warn "web/ 디렉토리가 없습니다. 스킵."
   fi
 else
-  log_step "4/6. 웹 대시보드 (--no-web → 스킵)"
+  log_step "4/7. 웹 대시보드 (--no-web → 스킵)"
 fi
 
 # ── 5. 글로벌 'devagent' / 'dev-agent' 명령어 등록 ──
 if [ "$INSTALL_GLOBAL" = true ]; then
-  log_step "5/6. 글로벌 명령어 등록 (npm install -g .)"
+  log_step "5/7. 글로벌 명령어 등록 (npm install -g .)"
 
   # npm prefix 권한 확인 (sudo 없이도 되는지)
   NPM_PREFIX="$(npm config get prefix 2>/dev/null || echo '')"
@@ -139,12 +142,34 @@ if [ "$INSTALL_GLOBAL" = true ]; then
     fi
   fi
 else
-  log_step "5/6. 글로벌 등록 (--no-global → 스킵)"
+  log_step "5/7. 글로벌 등록 (--no-global → 스킵)"
   log_info "수동 실행 시: 'node $(pwd)/dist/index.js ...'"
 fi
 
-# ── 6. 외부 에이전트 CLI 확인 ──
-log_step "6/6. 외부 에이전트 CLI 확인"
+# ── 6. devagent-planner 스킬 글로벌 설치 ──
+# 기획 단계는 Claude Code의 devagent-planner 스킬로 수행한다.
+# ~/.claude/skills/ 에 설치해두면 어느 프로젝트 디렉토리에서 claude 를 열어도 사용 가능.
+if [ "$INSTALL_SKILL" = true ]; then
+  log_step "6/7. devagent-planner 스킬 설치 (~/.claude/skills/)"
+
+  SKILL_SRC="$SCRIPT_DIR/.claude/skills/devagent-planner"
+  SKILL_DST="$HOME/.claude/skills/devagent-planner"
+
+  if [ -f "$SKILL_SRC/SKILL.md" ]; then
+    mkdir -p "$HOME/.claude/skills"
+    rm -rf "$SKILL_DST"
+    cp -R "$SKILL_SRC" "$SKILL_DST"
+    log_ok "스킬 설치 완료: $SKILL_DST"
+    log_info "사용법: 아무 디렉토리에서 'claude' 실행 후 \"Notion task <pageId> 기획해줘\""
+  else
+    log_warn "스킬 소스($SKILL_SRC/SKILL.md)가 없습니다. 스킵."
+  fi
+else
+  log_step "6/7. devagent-planner 스킬 (--no-skill → 스킵)"
+fi
+
+# ── 7. 외부 에이전트 CLI 확인 ──
+log_step "7/7. 외부 에이전트 CLI 확인"
 
 # Claude Code CLI
 if command -v claude >/dev/null 2>&1; then
@@ -183,15 +208,14 @@ ${BOLD}다음 단계:${RESET}
   3. 도움말:
      ${BLUE}devagent --help${RESET}
 
-  4. 첫 워크플로우 실행 (단축형):
-     ${BLUE}devagent task <NOTION_PAGE_ID>${RESET}
-
-     또는 옵션 명시:
-     ${BLUE}devagent --verbose run --task <NOTION_PAGE_ID> --max-iterations 3${RESET}
+  4. 첫 워크플로우 실행 (기획 → 승인 → build):
+     ${BLUE}claude${RESET}                                            # ① 기획: "Notion task <ID> 기획해줘" (devagent-planner 스킬)
+     ${BLUE}devagent notion status <NOTION_PAGE_ID> Approved${RESET}  # ② 검토 후 승인
+     ${BLUE}devagent build <NOTION_PAGE_ID> --project <path>${RESET}  # ③ 구현 + 리뷰 + PR
 
   5. (선택) .devagentrc.json으로 기본값 저장:
-     ${BLUE}echo '{ "task": "<DEFAULT_TASK_ID>", "maxIterations": 3 }' > .devagentrc.json${RESET}
-     이후 ${BLUE}devagent task${RESET} 만 입력해도 실행됨
+     ${BLUE}echo '{ "task": "<DEFAULT_TASK_ID>", "projectPath": "<path>" }' > .devagentrc.json${RESET}
+     이후 ${BLUE}devagent build${RESET} 만 입력해도 실행됨
 
 ${BOLD}자세한 가이드:${RESET} SETUP.md
 EOF

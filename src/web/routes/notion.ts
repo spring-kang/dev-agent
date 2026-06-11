@@ -173,29 +173,24 @@ export function createNotionRoutes(
    */
   router.post("/run", async (req: Request, res: Response) => {
     try {
-      const { pageId, projectPath, config, skipClaudeEnhancement } =
-        req.body as {
-          pageId?: string;
-          projectPath?: string;
-          config?: Partial<WorkflowConfig>;
-          skipClaudeEnhancement?: boolean;
-        };
+      const { pageId, projectPath, config } = req.body as {
+        pageId?: string;
+        projectPath?: string;
+        config?: Partial<WorkflowConfig>;
+      };
 
       if (!pageId || typeof pageId !== "string") {
         res.status(400).json({ error: "pageId는 필수입니다" });
         return;
       }
 
-      const promise = workflowService.executeFromNotion(pageId, {
+      const promise = workflowService.executeBuildFromNotion(pageId, {
         ...(projectPath ? { projectPath } : {}),
         ...(config ? { cliOverrides: config } : {}),
-        ...(skipClaudeEnhancement !== undefined
-          ? { skipClaudeEnhancement }
-          : {}),
       });
 
       res.status(202).json({
-        message: "Notion 기반 워크플로우가 시작되었습니다",
+        message: "Notion 기반 개발 워크플로우가 시작되었습니다 (Status=Approved 검증 후)",
         pageId,
       });
 

@@ -10,6 +10,7 @@ import type { ConfigManager } from "../components/config-manager.js";
 import type { WorkspaceManager } from "../components/workspace-manager.js";
 import type { Logger } from "../components/logger.js";
 import type { NotionConfigManager } from "../integrations/notion-config.js";
+import type { NotionClient } from "../integrations/notion-client.js";
 import { formatError } from "./formatters/error-formatter.js";
 import { formatReportText } from "./formatters/report-formatter.js";
 import { loadRC, applyRCToRunOptions, type DevAgentRC } from "./rc-loader.js";
@@ -25,6 +26,7 @@ export class CLI {
     private readonly workspaceManager: WorkspaceManager,
     private readonly logger: Logger,
     private readonly notionConfig?: NotionConfigManager,
+    private readonly notionClient?: NotionClient,
   ) {
     this.program = new Command();
     this.setupProgram();
@@ -49,7 +51,8 @@ export class CLI {
       .version("1.0.0")
       .description(
         "AI-powered development pipeline orchestrator\n" +
-          "  단축 명령어: task <id>, notion (login/test/list/clear), serve",
+          "  주요 명령어: build <pageId>, notion (login/test/list/status/pull/push), serve\n" +
+          "  기획은 claude 에서 devagent-planner 스킬로 수행합니다 (\"Notion task <pageId> 기획해줘\")",
       )
       .option("--verbose", "상세 로그 출력")
       .option("--no-color", "색상 비활성화")
@@ -58,23 +61,15 @@ export class CLI {
         this.verbose = cliVerbose || this.rc.verbose === true;
       });
 
-    // run 커맨드
+    // run 커맨드 (Notion 미사용 일반 모드)
     this.program
       .command("run")
-      .description("워크플로우 시작")
-      .option(
-        "-p, --project <path>",
-        "프로젝트 경로 (--task 사용 시 생략 가능, Notion Project Path 속성보다 우선)",
-      )
+      .description("일반 워크플로우 시작 (Notion 사용 시 `devagent build <pageId>` 권장)")
+      .requiredOption("-p, --project <path>", "프로젝트 경로")
       .option("-m, --max-iterations <number>", "최대 반복 횟수", parseInt)
       .option("-c, --config <path>", "설정 파일 경로")
-      .option(
-        "-t, --task <pageIdOrUrl>",
-        "Notion task page ID 또는 URL (지정 시 Notion 기반 워크플로우)",
-      )
-      .option("--skip-enhancement", "Claude 기획 고도화 건너뛰기 (fallback 사용)")
-      .argument("[task]", "작업 설명 (--task 사용 시 생략 가능)")
-      .action(async (task: string | undefined, options: Record<string, unknown>) => {
+      .argument("<task>", "작업 설명")
+      .action(async (task: string, options: Record<string, unknown>) => {
         await this.handleRun(task, options);
       });
 
@@ -217,45 +212,12 @@ export class CLI {
    * - rc               → 현재 로드된 .devagentrc 출력
    */
   private setupShortcutCommands(): void {
-    // task <id> — DEPRECATED: plan / build 로 분리됨
-    this.program
-      .command("task")
-      .description("[제거됨] `devagent plan <id>` → 승인 → `devagent build <id>` 로 분리")
-      .argument("[pageIdOrUrl]", "(무시됨)")
-      .action(async () => {
-        console.error(
-          "❌ `devagent task` 는 제거되었습니다.\n" +
-            "   기획-개발이 2단계로 분리되었습니다:\n" +
-            "     1) devagent plan <pageId>   (기획 고도화 + Planning)\n" +
-            "     2) Notion 에서 Status 를 \"Approved\" 로 전이\n" +
-            "     3) devagent build <pageId>  (개발 + 리뷰 + PR)\n",
-        );
-        process.exit(1);
-      });
-
-    // plan <pageId> — 기획 고도화 + Planning 단계만 실행
-    this.program
-      .command("plan")
-      .description("Notion task 기획 단계 실행 (PlanningEnhancer + Claude.plan)")
-      .argument("[pageIdOrUrl]", "Notion page ID 또는 URL")
-      .option("-p, --project <path>", "프로젝트 경로 override")
-      .option("--skip-enhancement", "Claude 기획 고도화 건너뛰기 (fallback 사용)")
-      .action(async (pageIdOrUrl: string | undefined, options: Record<string, unknown>) => {
-        const taskValue = pageIdOrUrl ?? this.rc.task;
-        if (!taskValue) {
-          throw new Error(
-            "page ID 가 필요합니다. 인자로 전달하거나 .devagentrc.json 의 'task' 키를 설정하세요.",
-          );
-        }
-        await this.handlePlan(taskValue, options);
-      });
-
-    // build <pageId> — Status=Approved 검증 → Implementation/Review/PR
+    // build <pageId> — Status=Approved 검증 → Implementation/Review/PR (단일 진입점)
     this.program
       .command("build")
-      .description("승인된 기획 기반 개발 단계 실행 (Status=Approved 검증 후 Implementation→Review→PR)")
+      .description("승인된 Notion task 기반 개발 실행 (Status=Approved 검증 후 Implementation→Review→PR)")
       .argument("[pageIdOrUrl]", "Notion page ID 또는 URL")
-      .option("-p, --project <path>", "프로젝트 경로 (생략 시 rc 의 projectPath)")
+      .option("-p, --project <path>", "프로젝트 경로 (생략 시 rc 또는 Notion 속성)")
       .option("-m, --max-iterations <number>", "최대 반복 횟수", parseInt)
       .action(async (pageIdOrUrl: string | undefined, options: Record<string, unknown>) => {
         const taskValue = pageIdOrUrl ?? this.rc.task;
@@ -297,9 +259,15 @@ export class CLI {
 
     notionAliasCmd
       .command("status")
-      .description("Notion 통합 상태")
-      .action(async () => {
-        await this.handleNotionStatus();
+      .description("Notion 통합 상태 표시 또는 페이지 Status 변경")
+      .argument("[pageIdOrUrl]", "(선택) Status 를 변경할 Notion 페이지")
+      .argument("[statusName]", "(선택) 변경할 Status 값 (예: Approved, Done)")
+      .action(async (pageIdOrUrl?: string, statusName?: string) => {
+        if (pageIdOrUrl && statusName) {
+          await this.handleNotionSetStatus(pageIdOrUrl, statusName);
+        } else {
+          await this.handleNotionStatus();
+        }
       });
 
     notionAliasCmd
@@ -310,6 +278,26 @@ export class CLI {
       .option("--max <number>", "최대 개수", parseInt, 20)
       .action(async (options: Record<string, unknown>) => {
         await this.handleNotionListTasks(options);
+      });
+
+    // pull <pageId> — Notion 페이지 본문을 마크다운으로 stdout/파일로 추출
+    notionAliasCmd
+      .command("pull")
+      .description("Notion 페이지 본문(markdown)을 stdout 또는 파일로 추출")
+      .argument("<pageIdOrUrl>", "Notion page ID 또는 URL")
+      .option("-o, --output <path>", "파일 경로 (생략 시 stdout)")
+      .action(async (pageIdOrUrl: string, options: Record<string, unknown>) => {
+        await this.handleNotionPull(pageIdOrUrl, options);
+      });
+
+    // push <pageId> --from <file> — 로컬 마크다운을 Notion 페이지 본문에 append
+    notionAliasCmd
+      .command("push")
+      .description("로컬 마크다운 파일을 Notion 페이지 본문에 append")
+      .argument("<pageIdOrUrl>", "Notion page ID 또는 URL")
+      .requiredOption("--from <path>", "append 할 마크다운 파일 경로")
+      .action(async (pageIdOrUrl: string, options: Record<string, unknown>) => {
+        await this.handleNotionPush(pageIdOrUrl, options);
       });
 
     // rc — 현재 로드된 .devagentrc 출력 (디버깅용)
@@ -324,47 +312,19 @@ export class CLI {
   // ── 커맨드 핸들러 ──
 
   private async handleRun(
-    task: string | undefined,
+    task: string,
     options: Record<string, unknown>,
   ): Promise<void> {
-    // .devagentrc/환경변수 값을 CLI 옵션에 병합 (CLI 옵션 우선)
     const merged = applyRCToRunOptions(this.rc, options);
 
     const cliOverrides: Partial<import("../types/config.js").WorkflowConfig> = {};
-
     if (merged["maxIterations"]) {
       cliOverrides.maxIterations = merged["maxIterations"] as number;
     }
 
-    const notionTask = merged["task"] as string | undefined;
-    options = merged;
-
-    if (notionTask) {
-      // Notion 기반 워크플로우
-      const projectPathOpt = options["project"] as string | undefined;
-      const projectPath = projectPathOpt ? path.resolve(projectPathOpt) : undefined;
-      const skipEnhancement = options["skipEnhancement"] === true;
-
-      console.log(`Notion task 기반 워크플로우 시작: ${notionTask}`);
-      const result = await this.workflowService.executeFromNotion(notionTask, {
-        ...(projectPath ? { projectPath } : {}),
-        cliOverrides,
-        skipClaudeEnhancement: skipEnhancement,
-      });
-      console.log(
-        `기획 고도화 완료 - 참조 페이지 ${result.enhancedPlan.context.task.referencedPages.length}개`,
-      );
-      this.printWorkflowResult(result);
-      return;
-    }
-
-    // 일반 모드: --project 와 task 인자 둘 다 필요
-    const projectPathOpt = options["project"] as string | undefined;
+    const projectPathOpt = merged["project"] as string | undefined;
     if (!projectPathOpt) {
       throw new Error("--project 옵션이 필요합니다");
-    }
-    if (!task) {
-      throw new Error("task 인자가 필요합니다 (또는 --task <pageId> 옵션 사용)");
     }
 
     const projectPath = path.resolve(projectPathOpt);
@@ -373,65 +333,26 @@ export class CLI {
   }
 
   /**
-   * `devagent plan <pageId>` 핸들러
-   * - WorkflowService.executeFromNotionPlanOnly 호출
-   * - 결과: 기획 산출물 경로 + Notion Status → "Plan Review"
-   */
-  private async handlePlan(
-    pageIdOrUrl: string,
-    options: Record<string, unknown>,
-  ): Promise<void> {
-    const projectPathOpt = (options["project"] as string | undefined) ?? this.rc.projectPath;
-    const projectPath = projectPathOpt ? path.resolve(projectPathOpt) : undefined;
-    const skipEnhancement = options["skipEnhancement"] === true;
-
-    console.log(`Notion task 기획 단계 시작: ${pageIdOrUrl}`);
-    const result = await this.workflowService.executeFromNotionPlanOnly(pageIdOrUrl, {
-      ...(projectPath ? { projectPath } : {}),
-      skipClaudeEnhancement: skipEnhancement,
-    });
-
-    console.log("");
-    console.log("✅ 기획 단계 완료");
-    console.log(`  Task        : ${result.enhancedPlan.taskTitle}`);
-    console.log(`  Workflow ID : ${result.workflowId}`);
-    console.log(`  산출물      : ${result.artifactsPath}`);
-    console.log("");
-    console.log("📋 다음 단계:");
-    console.log("  1) Notion 페이지에서 기획을 검토하세요");
-    console.log("  2) 만족하면 Status 를 \"Approved\" 로 변경하세요");
-    console.log(`  3) devagent build ${pageIdOrUrl}`);
-    console.log("");
-    console.log("  ⚠️  수정이 필요하면 devagent plan 을 재실행하세요");
-    console.log("     (기존 산출물은 .ai-workflow/archive/ 로 백업됩니다)");
-    console.log("");
-  }
-
-  /**
    * `devagent build <pageId>` 핸들러
-   * - WorkflowService.executeFromNotionBuildOnly 호출
+   * - WorkflowService.executeBuildFromNotion 호출
    * - Status=Approved 검증 실패 시 즉시 거부
+   * - Notion task 본문(markdown)을 그대로 Codex 구현 명세로 전달 (Planning 스킵)
    */
   private async handleBuild(
     pageIdOrUrl: string,
     options: Record<string, unknown>,
   ): Promise<void> {
     const projectPathOpt = (options["project"] as string | undefined) ?? this.rc.projectPath;
-    if (!projectPathOpt) {
-      throw new Error(
-        "프로젝트 경로가 필요합니다. --project 옵션 또는 .devagentrc.json 의 'projectPath' 키를 설정하세요.",
-      );
-    }
-    const projectPath = path.resolve(projectPathOpt);
+    const projectPath = projectPathOpt ? path.resolve(projectPathOpt) : undefined;
 
     const cliOverrides: Partial<import("../types/config.js").WorkflowConfig> = {};
     if (options["maxIterations"]) {
       cliOverrides.maxIterations = options["maxIterations"] as number;
     }
 
-    console.log(`Notion task 개발 단계 시작: ${pageIdOrUrl}`);
-    const result = await this.workflowService.executeFromNotionBuildOnly(pageIdOrUrl, {
-      projectPath,
+    console.log(`Notion task 개발 시작: ${pageIdOrUrl}`);
+    const result = await this.workflowService.executeBuildFromNotion(pageIdOrUrl, {
+      ...(projectPath ? { projectPath } : {}),
       cliOverrides,
     });
 
@@ -685,6 +606,117 @@ export class CLI {
     const cfg = this.getNotionConfig();
     await cfg.clearNotion();
     console.log("✅ Notion 인증이 제거되었습니다");
+  }
+
+  /**
+   * `devagent notion pull <pageId> [-o file]`
+   * Notion 페이지 본문(markdown)을 stdout 또는 파일로 추출.
+   */
+  private async handleNotionPull(
+    pageIdOrUrl: string,
+    options: Record<string, unknown>,
+  ): Promise<void> {
+    const client = await this.requireNotionClient();
+    const task = await client.getTask(pageIdOrUrl);
+    if (!task) {
+      console.log(`❌ Notion 페이지를 찾을 수 없습니다: ${pageIdOrUrl}`);
+      process.exitCode = 1;
+      return;
+    }
+
+    const header = `# ${task.title}\n\n`;
+    const body = task.bodyMarkdown ?? "";
+    const content = header + body + (body.endsWith("\n") ? "" : "\n");
+
+    const outputPath = options["output"] as string | undefined;
+    if (outputPath) {
+      const { writeFile } = await import("node:fs/promises");
+      await writeFile(path.resolve(outputPath), content, "utf-8");
+      console.log(`✅ ${outputPath} 에 저장 (${content.length}자)`);
+    } else {
+      process.stdout.write(content);
+    }
+  }
+
+  /**
+   * `devagent notion push <pageId> --from <file>`
+   * 로컬 마크다운 파일을 Notion 페이지 본문에 append.
+   */
+  private async handleNotionPush(
+    pageIdOrUrl: string,
+    options: Record<string, unknown>,
+  ): Promise<void> {
+    const cfg = this.getNotionConfig();
+    const notion = await cfg.getNotion();
+    if (!notion) {
+      console.log("❌ Notion 인증이 설정되지 않았습니다");
+      process.exitCode = 1;
+      return;
+    }
+
+    const filePath = path.resolve(String(options["from"]));
+    const { readFile } = await import("node:fs/promises");
+    const markdown = await readFile(filePath, "utf-8");
+    if (markdown.trim().length === 0) {
+      console.log(`❌ 파일이 비어 있습니다: ${filePath}`);
+      process.exitCode = 1;
+      return;
+    }
+
+    const { NotionBlockAppender } = await import("../integrations/notion-block-appender.js");
+    const appender = new NotionBlockAppender(notion.auth, this.logger);
+    const pageId = this.extractPageId(pageIdOrUrl);
+    const blocks = appender.markdownToBlocks(markdown);
+    await appender.appendBlocks(pageId, blocks);
+
+    console.log(`✅ Notion 페이지 ${pageId} 에 ${blocks.length}개 block append 완료`);
+  }
+
+  /**
+   * `devagent notion status <pageId> <statusName>`
+   * Notion 페이지의 Status 속성을 변경.
+   */
+  private async handleNotionSetStatus(
+    pageIdOrUrl: string,
+    statusName: string,
+  ): Promise<void> {
+    const client = await this.requireNotionClient();
+    const pageId = this.extractPageId(pageIdOrUrl);
+    await client.updateStatus(pageId, statusName);
+    console.log(`✅ ${pageId} Status → "${statusName}"`);
+  }
+
+  /**
+   * NotionClient 가 주입되어 있지 않으면 즉시 생성한다.
+   */
+  private async requireNotionClient(): Promise<NotionClient> {
+    if (this.notionClient) return this.notionClient;
+    const cfg = this.getNotionConfig();
+    const notion = await cfg.getNotion();
+    if (!notion) {
+      throw new Error("Notion 인증이 설정되지 않았습니다. `devagent notion login --token <...>` 실행");
+    }
+    const { NotionClient } = await import("../integrations/notion-client.js");
+    return new NotionClient(notion.auth, this.logger, notion.propertyMapping);
+  }
+
+  /**
+   * Notion 페이지 URL 또는 raw ID 에서 pageId 추출.
+   * URL 패턴: https://www.notion.so/.../<title>-<32hex>
+   * raw ID: 8-4-4-4-12 hyphen 형식 또는 32hex
+   */
+  private extractPageId(input: string): string {
+    const trimmed = input.trim();
+    const hexMatch = trimmed.match(/([0-9a-fA-F]{32})/);
+    if (hexMatch?.[1]) {
+      const h = hexMatch[1].toLowerCase();
+      return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`;
+    }
+    const uuidMatch = trimmed.match(
+      /([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})/,
+    );
+    if (uuidMatch?.[1]) return uuidMatch[1].toLowerCase();
+    return trimmed;
   }
 
   // ── rc 표시 ──

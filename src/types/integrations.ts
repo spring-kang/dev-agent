@@ -114,18 +114,21 @@ export interface EnhancedPlan {
 }
 
 // ── 워크플로우 → Notion Status 매핑 기본값 ──
-
+//
+// 기획 단계(planning/plan_review/approved) 는 사용자가 `claude` CLI 로 직접 수행하고
+// Notion 에서 직접 Status="Approved" 로 전이하므로 자동 sync 대상이 아니다.
+// devagent 가 자동으로 갱신하는 단계는 implementation 부터.
 export const DEFAULT_NOTION_STATUS_MAPPING: Record<WorkflowPhase, string> = {
-  initializing: "To Do",
-  planning: "Planning",
-  plan_review: "Plan Review",
+  initializing: "Approved",
+  planning: "Approved",
+  plan_review: "Approved",
   approved: "Approved",
   implementation: "In Progress",
   review: "In Review",
   pr_creation: "In Review",
   completed: "Done",
-  failed: "To Do",
-  stopped: "To Do",
+  failed: "Approved",
+  stopped: "Approved",
 };
 
 // ── 통합 메타데이터 (워크플로우 상태에 부착) ──

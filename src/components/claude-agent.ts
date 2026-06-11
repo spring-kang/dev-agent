@@ -30,6 +30,12 @@ export class ClaudeAgent implements PlanningAgent, ReviewAgent {
   constructor(
     private readonly logger: Logger,
     private readonly timeout: number = 300_000,
+    /**
+     * 리뷰 시 사용할 모델 ID (예: "claude-sonnet-4-5-20250929").
+     * 빈 문자열이면 claude CLI 기본 모델 사용.
+     * 기획(plan)에는 적용되지 않음 — 기획은 사용자가 직접 claude로 진행하므로 호출 자체가 거의 없음.
+     */
+    private readonly reviewModel: string = "",
   ) {}
 
   /**
@@ -72,9 +78,15 @@ export class ClaudeAgent implements PlanningAgent, ReviewAgent {
     const prompt = this.buildReviewPrompt(request);
     const delivery = await this.preparePrompt(prompt, request.projectPath);
 
-    this.logger.info("Claude Code 리뷰 시작");
+    if (this.reviewModel) {
+      this.logger.info(`Claude Code 리뷰 시작 (model=${this.reviewModel})`);
+    } else {
+      this.logger.info("Claude Code 리뷰 시작 (CLI 기본 모델)");
+    }
 
-    const result = await this.executeClaudeCli(delivery, request.projectPath);
+    const result = await this.executeClaudeCli(delivery, request.projectPath, {
+      model: this.reviewModel || undefined,
+    });
 
     this.logger.info("Claude Code 리뷰 완료");
     this.logger.debug(`리뷰 출력 길이: ${result.stdout.length}자`);
@@ -163,6 +175,11 @@ ${request.previousFeedback ?? "피드백 없음"}
     if (request.testScenariosPath) {
       contextInfo += `\n테스트 시나리오 파일: ${request.testScenariosPath}`;
     }
+    if (request.inlineSpec && request.inlineSpec.trim().length > 0) {
+      contextInfo +=
+        `\n구현 명세 출처: ${request.inlineSpecSource ?? "(inline)"}\n` +
+        `\n구현 명세 본문:\n${request.inlineSpec}\n`;
+    }
 
     return `다음 변경 사항에 대해 코드 리뷰를 수행해주세요.
 
@@ -215,8 +232,13 @@ ${filesList}
 
   /**
    * Claude CLI 실행 (shell: false)
+   * options.model 이 주어지면 --model <id> 인자 추가 (리뷰용)
    */
-  private executeClaudeCli(delivery: PromptDelivery, cwd: string): Promise<ProcessResult> {
+  private executeClaudeCli(
+    delivery: PromptDelivery,
+    cwd: string,
+    options?: { model?: string },
+  ): Promise<ProcessResult> {
     return new Promise((resolve, reject) => {
       const args: string[] = [];
 
@@ -240,6 +262,11 @@ ${filesList}
           "text",
           "--dangerously-skip-permissions",
         );
+      }
+
+      // 모델 명시 (예: Sonnet으로 리뷰)
+      if (options?.model && options.model.length > 0) {
+        args.push("--model", options.model);
       }
 
       const start = performance.now();

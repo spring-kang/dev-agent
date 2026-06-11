@@ -1,6 +1,6 @@
 # dev-agent
 
-> Notion task를 입력으로 받아 **기획 → 구현 → 리뷰 → 커밋 → PR**까지 자율적으로 수행하는 AI 멀티 에이전트 개발 파이프라인.
+> 사용자가 **Claude Code로 직접 기획**하고, Notion에서 **Approved**로 승인하면 **Codex가 구현 → Claude(Sonnet)가 리뷰 → 커밋 → PR**까지 자동 수행하는 AI 개발 파이프라인.
 
 [![Node](https://img.shields.io/badge/node-%3E%3D18.0.0-brightgreen)]()
 [![TypeScript](https://img.shields.io/badge/typescript-5.6-blue)]()
@@ -8,58 +8,74 @@
 
 ## 주요 특징
 
-- **멀티 에이전트 협업**: Claude Code (기획·리뷰) + Codex (구현)의 역할 분담
-- **자율 사이클 루프**: 리뷰 결과에 따라 자동 재구현 (CHANGES REQUESTED → 다음 사이클)
-- **Notion 양방향 통합**: Task body 자동 로드 → Status 자동 전이 → 산출물 본문/코멘트 게시
+- **기획·개발 완전 분리**: 기획은 사용자가 Claude Code로 직접, 구현은 Codex가 Approved task만 수행
+- **Approved 게이트**: `devagent build`는 Notion Status가 정확히 `Approved`일 때만 진입
+- **자율 사이클 루프**: 리뷰 결과에 따라 자동 재구현 (CHANGES_REQUESTED → 다음 사이클)
+- **Sonnet 리뷰**: 코드 리뷰는 `claude-sonnet-4-5-20250929` 모델 고정 기본값 (config로 변경 가능)
+- **Notion 본문 = 구현 명세**: task 본문 markdown을 그대로 Codex에 inline spec으로 전달
 - **Git 통합**: 사이클별 커밋, 자동 PR 생성, 원격 미설정 시 graceful skip
-- **EventEmitter 기반 결합 분리**: 동기화 로직이 파이프라인 코드를 건드리지 않음
-- **Graceful degradation**: 외부 API 실패가 본 작업을 막지 않음
+- **Graceful degradation**: Notion 동기화 실패가 본 작업을 막지 않음
 
 ## 아키텍처
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
 │                     WorkflowService (Facade)                 │
-│         executeFromNotion / execute / resume / status        │
+│      executeBuildFromNotion / execute / resume / status      │
 └─────────────────┬────────────────────────┬───────────────────┘
                   │                        │
         ┌─────────▼──────────┐   ┌─────────▼──────────────┐
         │   Orchestrator     │   │  Integrations (Notion) │
-        │   PipelineService  │   │  - PlanningEnhancer    │
+        │   PipelineService  │   │  - NotionClient        │
         │                    │   │  - NotionStatusSync    │
         │  ┌──────────────┐  │   │  - NotionArtifactSync  │
-        │  │  Planning    │──┼───┼─► toggle blocks +      │
-        │  │  (Claude)    │  │   │   summary comments     │
+        │  │Implementation│──┼───┼─► toggle blocks +      │
+        │  │   (Codex)    │  │   │   summary comments     │
         │  ├──────────────┤  │   └────────────────────────┘
-        │  │ Implementation│ │
-        │  │   (Codex)    │  │
-        │  ├──────────────┤  │
         │  │   Review     │  │
-        │  │  (Claude)    │  │
+        │  │(Claude Sonnet)│ │
         │  └──────────────┘  │
         └────────────────────┘
 ```
 
-## 워크플로우 흐름 (2단계 분리: plan / build)
+## 워크플로우 흐름 (기획은 사람이, 구현은 Codex가)
 
-### Stage 1 — `devagent plan <pageId>`
-1. **Planning** — Claude Code가 기획서 3종 생성
-   - `requirements.md` — 요구사항 분석
-   - `implementation-spec.md` — 구현 명세
-   - `test-scenarios.md` — 테스트 시나리오
-2. Notion Status → **Plan Review** 로 자동 전이
-3. 사용자가 Notion 에서 기획을 검토하고 직접 **Approved** 로 전이
+### Stage 1 — 기획 (`claude` + `devagent-planner` 스킬)
+
+기획은 **claude 안에서 대화형으로** 진행합니다. `./setup.sh`가 `devagent-planner` 스킬을
+`~/.claude/skills/`에 자동 설치하므로 **아무 디렉토리에서나** 사용할 수 있습니다.
+
+```bash
+claude
+# > "Notion task <pageId> 기획해줘"   ← 스킬이 자동 매칭되어 실행됨
+```
+
+스킬이 수행하는 절차:
+
+1. Notion task 로드 (제목 + 본문 + Project Path 속성)
+2. 사용자와 대화하며 요구사항·구현 명세·테스트 시나리오 작성
+3. 완성된 구현 명세를 **Notion 본문에 push**
+   (build는 Notion 본문을 spec으로 사용하므로 필수)
+
+사용자는 Notion에서 기획 내용을 검토하고 **직접 `Approved`로 승격**:
+
+```bash
+devagent notion status <pageId> Approved
+```
 
 ### Stage 2 — `devagent build <pageId>`
-1. Notion Status 가 `Approved` 인지 검증 (아니면 거부)
-2. **Implementation** — Codex가 코드 작성 및 사이클 커밋
-3. **Review** — Claude Code가 코드 리뷰 (APPROVED 시 종료, CHANGES_REQUESTED 시 재구현)
-4. **Finalize** — origin 있으면 push + PR, 없으면 로컬 보존
 
-Notion Status 자동 전이:
-`To Do → Planning → Plan Review → (사용자 승인) → Approved → In Progress → In Review → Done`
+1. Notion Status가 `Approved`인지 검증 (아니면 즉시 거부)
+2. task 본문 markdown을 inline spec으로 로드 (별도 Planning 없음)
+3. **Implementation** — Codex가 코드 작성 및 사이클 커밋
+4. **Review** — Claude(Sonnet)가 코드 리뷰 (APPROVED 시 종료, CHANGES_REQUESTED 시 재구현)
+5. **Finalize** — origin 있으면 push + PR, 없으면 로컬 보존
 
-> 기존 `devagent task <id>` 단일 명령은 **제거**되었습니다. plan/build 두 단계로 명시 호출하세요.
+Notion Status 자동 전이 (build 단계만):
+`Approved → In Progress → In Review → Done` (실패/중단 시 `Approved`로 복귀)
+
+> 기존 `devagent task <id>` (기획부터 PR까지 무중단 자동) 명령은 **제거**되었습니다.
+> 기획(plan)과 구현(build) 사이에는 반드시 사용자의 `Approved` 승인이 필요합니다.
 
 ## 설치
 
@@ -100,28 +116,31 @@ npx tsc          # → dist/ 생성
 devagent notion login --token ntn_xxxxxxxxxxxx --default-db <NOTION_DB_ID>
 ```
 
-### 2. 워크플로우 실행 (plan → 검토 → build)
+### 2. 워크플로우 실행 (기획 → 승인 → build)
 
 ```bash
-# Stage 1: 기획
-devagent plan 376e8963-3f9d-80bb-ac3e-d8818389de61
+# Stage 1: 기획 — claude 에서 devagent-planner 스킬 사용
+claude
+# > "Notion task 376e8963-3f9d-80bb-ac3e-d8818389de61 기획해줘"
+# → 대화하며 기획 완성 + Notion 본문 push 후 종료
 
-# → Notion 페이지에서 산출물 검토 후 Status 를 "Approved" 로 변경
+# → Notion에서 기획 검토 후 Status 를 "Approved" 로 변경
+devagent notion status 376e8963-3f9d-80bb-ac3e-d8818389de61 Approved
 
-# Stage 2: 구현 + 리뷰 + PR (Status=Approved 확인 후 실행)
+# Stage 2: 구현 + 리뷰 + PR (Status=Approved 검증 후 실행)
 devagent build 376e8963-3f9d-80bb-ac3e-d8818389de61 --project /path/to/project
 ```
 
 **옵션 명시:**
 ```bash
-devagent plan <pageId> --project /path/to/project --skip-enhancement
 devagent build <pageId> --project /path/to/project --max-iterations 5
 ```
 
 **직접 작업 지시 (Notion 없이):**
 ```bash
 devagent run \
-  --task "README에 사용법 섹션 추가하고 'docs: 사용법 추가' 메시지로 커밋"
+  --project /path/to/project \
+  "README에 사용법 섹션 추가하고 'docs: 사용법 추가' 메시지로 커밋"
 ```
 
 ## CLI 명령어
@@ -130,45 +149,45 @@ devagent run \
 
 | 명령어 | 설명 |
 |---|---|
-| `plan <pageId>` | Notion task 기획 단계 실행 → Status=Plan Review |
-| `build <pageId>` | Notion task 빌드 단계 실행 (Status=Approved 검증 필요) |
-| `run` | (레거시) 단일-패스 워크플로우 실행 (Notion 비연동 시 사용) |
+| `build <pageId>` | 승인된 Notion task 개발 실행 (Status=Approved 검증 필요) |
+| `run <task>` | 일반 워크플로우 실행 (Notion 비연동, 작업 설명 직접 입력) |
 | `resume <project>` | 중단된 워크플로우 복구 |
 | `status [project]` | 진행 상태 조회 |
 | `list` | 등록된 프로젝트 목록 |
 | `serve` | 웹 대시보드 서버 실행 |
 
-> `devagent task <id>` 는 **제거**되었습니다. `plan` + `build` 두 단계를 사용하세요.
+> `devagent task <id>` (기획~PR 무중단 자동)는 **제거**되었습니다.
+> 기획(claude + `devagent-planner` 스킬) → 사용자 검토/`Approved` 승인 → `build` 순서로 진행하세요.
 
-### 단축 명령어 (alias)
+### Notion 단축 명령어
 
-| 명령어 | 동등한 명령어 | 설명 |
-|---|---|---|
-| `devagent notion login --token <T>` | `integrations notion set` | 토큰 저장 |
-| `devagent notion logout` | `integrations notion clear` | 토큰 제거 |
-| `devagent notion test` | `integrations notion test` | 인증 확인 |
-| `devagent notion list` | `integrations notion tasks` | DB의 task 목록 |
-| `devagent notion status` | `integrations notion status` | 통합 상태 |
-| `devagent rc` | — | 로드된 `.devagentrc` 출력 |
+| 명령어 | 설명 |
+|---|---|
+| `devagent notion login --token <T> [--default-db <ID>]` | 토큰 저장 |
+| `devagent notion logout` | 토큰 제거 |
+| `devagent notion test` | 인증 확인 |
+| `devagent notion list` | DB의 task 목록 |
+| `devagent notion status` | 통합 상태 조회 |
+| `devagent notion status <pageId> <Status>` | 페이지 Status 직접 변경 (예: `Approved`) |
+| `devagent notion pull <pageId> [-o <file>]` | task 본문 markdown 추출 |
+| `devagent notion push <pageId> --from <file>` | markdown 파일을 본문에 append |
+| `devagent rc` | 로드된 `.devagentrc` 출력 |
 
-### `plan` / `build` 옵션
-
-| 명령어 | 옵션 | 설명 | 기본값 |
-|---|---|---|---|
-| `plan` | `-p, --project <path>` | 프로젝트 경로 override | Notion `Project Path` 속성 |
-| `plan` | `--skip-enhancement` | Claude 기획 고도화 스킵 | false |
-| `build` | `-p, --project <path>` | 프로젝트 경로 (**필수**, Notion fallback 없음) | — |
-| `build` | `-m, --max-iterations <N>` | 최대 사이클 수 | 3 |
-
-### `run` 주요 옵션
+### `build` 옵션
 
 | 옵션 | 설명 | 기본값 |
 |---|---|---|
-| `--task <id\|text>` | Notion Page ID 또는 작업 설명 | 필수 (rc로도 가능) |
-| `--project <path>` | 작업 대상 경로 | Notion 속성 또는 cwd |
-| `--max-iterations <N>` | 최대 사이클 수 | 3 |
+| `-p, --project <path>` | 프로젝트 경로 | rc 설정 또는 Notion `Project Path` 속성 |
+| `-m, --max-iterations <N>` | 최대 사이클 수 | 3 |
+
+### `run` 옵션
+
+| 옵션/인자 | 설명 | 기본값 |
+|---|---|---|
+| `<task>` (인자) | 작업 설명 텍스트 | 필수 |
+| `-p, --project <path>` | 작업 대상 경로 | **필수** |
+| `-m, --max-iterations <N>` | 최대 사이클 수 | 3 |
 | `--verbose` | 상세 로그 | false |
-| `--skip-enhancement` | 기획 고도화 단계 스킵 | false |
 
 ## `.devagentrc.json` (기본값 저장)
 
@@ -187,7 +206,6 @@ devagent run \
   "projectPath": "/Users/me/projects/foo",
   "maxIterations": 3,
   "verbose": true,
-  "skipEnhancement": false,
   "notion": { "defaultDatabaseId": "<DB_ID>" }
 }
 ```
@@ -197,7 +215,6 @@ devagent run \
 - `DEVAGENT_PROJECT_PATH`
 - `DEVAGENT_MAX_ITERATIONS`
 - `DEVAGENT_VERBOSE` (1/true)
-- `DEVAGENT_SKIP_ENHANCEMENT` (1/true)
 - `DEVAGENT_DEFAULT_DB`
 
 **확인:**
@@ -217,16 +234,15 @@ devagent rc          # 어떤 소스에서 어떤 값이 적용됐는지 표시
 
 ### Status 옵션
 
-- `To Do` (또는 `Not started`)
-- `Planning`
-- `Plan Review` — `devagent plan` 완료 시 자동 설정. 사용자 검토 대기.
-- `Approved` — 사용자가 기획 승인 후 직접 설정. `devagent build` 진입 조건.
-- `In Progress`
-- `In Review`
-- `Done`
+- `To Do` (또는 `Not started`) — 기획 전/기획 중인 task
+- `Approved` — 사용자가 기획 검토 후 직접 설정. **`devagent build` 진입 조건.**
+- `In Progress` — build 시작 시 자동 전이
+- `In Review` — build 의 코드 리뷰 단계에서 자동 전이
+- `Done` — 완료 시 자동 전이
 
 > 라벨이 다르면 `integrations.json`의 `statusMapping`으로 매핑 가능.
 > `build` 명령은 Status 가 정확히 `Approved` 인 경우에만 진행하며, 그 외에는 즉시 거부합니다.
+> 실패/중단 시 Status 는 `Approved` 로 복귀하므로 수정 후 재시도할 수 있습니다.
 
 ### Notion Integration Capabilities
 
@@ -269,7 +285,7 @@ Settings → Integrations → Capabilities에서 활성화:
 <project>/
 ├── .ai-workflow/
 │   ├── current/
-│   │   ├── artifacts/
+│   │   ├── artifacts/              # 기획 산출물 (run 모드에서만 생성)
 │   │   │   ├── requirements.md
 │   │   │   ├── implementation-spec.md
 │   │   │   └── test-scenarios.md
@@ -277,6 +293,9 @@ Settings → Integrations → Capabilities에서 활성화:
 │   └── archive/
 └── (소스 코드 변경 + git 커밋)
 ```
+
+> `build` 모드에서는 Notion 본문 자체가 구현 명세(inline spec)로 사용되므로
+> artifacts/ 파일 생성 없이 바로 Implementation 으로 진입합니다.
 
 ### Git 결과
 - 새 브랜치: `ai/YYYYMMDD-HHMMSS-<task-slug>`

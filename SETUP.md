@@ -111,6 +111,20 @@ npm install -g .
 
 스킵하려면: `./setup.sh --no-global`
 
+### 기획 스킬 설치 (devagent-planner)
+
+기획 단계는 Claude Code의 **`devagent-planner` 스킬**로 수행합니다.
+`./setup.sh` 실행 시 자동으로 `~/.claude/skills/devagent-planner/` 에 설치되어
+**어느 프로젝트 디렉토리에서 `claude` 를 열어도** 스킬이 동작합니다.
+
+수동 설치 시:
+```bash
+mkdir -p ~/.claude/skills
+cp -R .claude/skills/devagent-planner ~/.claude/skills/
+```
+
+스킵하려면: `./setup.sh --no-skill`
+
 ---
 
 ## 4️⃣ 외부 에이전트 CLI 설치 & 인증
@@ -164,10 +178,10 @@ codex --version
    | 속성명 | 타입 | 비고 |
    |---|---|---|
    | `Name` | Title | 작업 제목 |
-   | `Status` | Status / Select | `To Do`, `Planning`, `Plan Review`, `Approved`, `In Progress`, `In Review`, `Done` |
+   | `Status` | Status / Select | `To Do`, `Approved`, `In Progress`, `In Review`, `Done` |
    | `Project Path` | Rich text | 작업 대상 로컬 경로 |
 
-   > `Plan Review` 와 `Approved` 는 plan/build 분리에 필요한 신규 옵션입니다.
+   > `Approved` 는 build 진입 게이트입니다. 사용자가 기획 검토 후 직접 설정합니다.
 3. **DB 우상단 `⋯` → `Connections` → dev-agent Integration 추가**
 
 ### C. DB ID 추출
@@ -234,29 +248,34 @@ Properties:
 - Status: `To Do`
 - Project Path: `/tmp/dev-agent-test`
 
-### 실행 (plan → 검토 → build)
+### 실행 (기획 → 승인 → build)
 
 ```bash
-# Stage 1: 기획
-devagent plan <NOTION_PAGE_ID>
-#  → Notion Status 가 "Plan Review" 로 전환됨
-#  → 페이지 본문/코멘트에 기획 산출물 게시
+# Stage 1: 기획 — devagent-planner 스킬 (setup.sh가 ~/.claude/skills/에 자동 설치)
+claude          # 아무 디렉토리에서나 실행 가능
+# > "Notion task <NOTION_PAGE_ID> 기획해줘"   ← 스킬이 자동 매칭되어 실행됨
+# → 대화하며 기획 완성 + Notion 본문 push 후 종료
 ```
 
-→ Notion 페이지에서 기획서 3종을 검토하고 Status 를 **수동으로 `Approved`** 로 변경.
+→ Notion 페이지에서 기획 내용을 확인하고 Status 를 **`Approved`** 로 변경:
+
+```bash
+devagent notion status <NOTION_PAGE_ID> Approved
+```
 
 ```bash
 # Stage 2: 구현 + 리뷰 + PR
 devagent build <NOTION_PAGE_ID> --project /tmp/dev-agent-test
-#  → Status 검증 후 Implementation → Review → PR
+#  → Status=Approved 검증 후 Implementation → Review → PR
 ```
 
 성공 시:
-- ✅ Notion Status: `To Do → Planning → Plan Review → (사용자 승인) → Approved → In Progress → In Review → Done`
+- ✅ Notion Status: `Approved → In Progress → In Review → Done`
 - ✅ README에 라인 추가됨
 - ✅ git 커밋 메시지가 spec과 일치
 
-> `build` 는 `--project` 가 **필수**입니다 (Notion `Project Path` 자동 fallback 없음 — 잘못된 경로로 실수 방지).
+> 이 스모크 테스트처럼 본문이 이미 완결된 명세라면 기획 단계 없이
+> 바로 `Approved` 로 설정하고 `build` 를 실행해도 됩니다.
 
 ---
 
@@ -293,7 +312,7 @@ devagent build <NOTION_PAGE_ID> --project /tmp/dev-agent-test
 
 - [ ] Node.js 18+, git 설치
 - [ ] `git clone git@github.com:spring-kang/dev-agent.git`
-- [ ] `./setup.sh` 실행 (의존성 + 빌드 + 글로벌 `devagent` 등록까지 자동)
+- [ ] `./setup.sh` 실행 (의존성 + 빌드 + 글로벌 `devagent` 등록 + `devagent-planner` 스킬 설치까지 자동)
 - [ ] `npm install -g @anthropic-ai/claude-code` + 인증
 - [ ] Codex CLI 설치 + 인증
 - [ ] Notion Integration 생성 + capability 활성화
@@ -301,8 +320,8 @@ devagent build <NOTION_PAGE_ID> --project /tmp/dev-agent-test
 - [ ] `devagent notion login --token <T> --default-db <ID>`
 - [ ] (선택) `.devagentrc.json`으로 기본값 저장
 - [ ] 테스트 티켓으로 스모크 테스트:
-  - [ ] `devagent plan <ID>` → Status=Plan Review 확인
-  - [ ] Notion 에서 Status 를 Approved 로 수동 전환
+  - [ ] `claude` 에서 `devagent-planner` 스킬로 기획 ("Notion task <ID> 기획해줘") — 또는 본문 직접 작성
+  - [ ] `devagent notion status <ID> Approved` 로 승인
   - [ ] `devagent build <ID> --project <path>` → 완료
 
 ---
@@ -316,17 +335,17 @@ devagent build <NOTION_PAGE_ID> --project /tmp/dev-agent-test
 
 | 단계 | 사용 CLI | 미인증 시 영향 |
 |---|---|---|
-| Planning (기획) | `claude` | Planning 단계에서 즉시 실패 |
-| Planning 고도화 | `claude` | 동일 (스킵 가능: `--skip-enhancement`) |
-| Implementation (구현) | `codex` | Implementation 단계에서 실패 |
-| Review (리뷰) | `claude` | Review 단계에서 실패 |
-| Notion 동기화 | dev-agent 내부 | 토큰 없으면 동기화만 스킵 (본 작업은 계속) |
+| 기획 (수동) | `claude` + `devagent-planner` 스킬 (사용자가 직접 실행) | 기획을 진행할 수 없음 |
+| Implementation (구현) | `codex` (dev-agent가 spawn) | Implementation 단계에서 실패 |
+| Review (리뷰) | `claude` (Sonnet, dev-agent가 spawn) | Review 단계에서 실패 |
+| Notion 동기화 | dev-agent 내부 | 토큰 없으면 `build` 진입 자체가 불가 (Approved 검증 필요) |
 
 ### 7단계 워크플로우
 
 ```bash
 # 1. dev-agent 설치 (저장소 clone 후)
 ./setup.sh
+# → 빌드 + 글로벌 devagent 등록 + devagent-planner 스킬(~/.claude/skills/) 설치
 
 # 2. Claude Code 인증 (Anthropic OAuth — 브라우저 열림)
 claude
@@ -349,11 +368,11 @@ claude --print "ok" --output-format text --dangerously-skip-permissions
 devagent notion test
 # → "✅ Notion 인증 성공: <계정명>"
 
-# 7. 첫 워크플로우 실행 (plan → 검토 → build)
-devagent notion list                                       # 가능한 task 조회
-devagent plan <NOTION_PAGE_ID>                             # ① 기획 → Plan Review
-# (Notion 에서 Status 를 "Approved" 로 수동 전환)
-devagent build <NOTION_PAGE_ID> --project /path/to/project # ② 구현 + 리뷰 + PR
+# 7. 첫 워크플로우 실행 (기획 → 승인 → build)
+devagent notion list                                        # 가능한 task 조회
+claude                                                      # ① 기획: "Notion task <ID> 기획해줘" (devagent-planner 스킬)
+devagent notion status <NOTION_PAGE_ID> Approved            # ② 검토 후 승인
+devagent build <NOTION_PAGE_ID> --project /path/to/project  # ③ 구현 + 리뷰 + PR
 ```
 
 이 7단계를 다 거치면 **미인증으로 인한 실패는 사실상 발생하지 않습니다**.
@@ -370,19 +389,12 @@ devagent build <NOTION_PAGE_ID> --project /path/to/project # ② 구현 + 리뷰
 
 ### 인증이 끊겼을 때 증상
 
-- **Claude 미인증**: `Planning phase failed: claude exited with code 1: Authentication error...`
+- **Claude 미인증**: `Review phase failed: claude exited with code 1: Authentication error...`
 - **Codex 미인증**: `Implementation phase failed: codex exited with code 1: Not logged in...`
-- **Notion 미인증**: 워크플로우는 진행되지만 Status/본문 동기화가 스킵됨 (로그에 경고)
+- **Notion 미인증**: `build` 진입 시 Approved 검증을 할 수 없어 즉시 거부됨
 
-→ 실패 시 워크플로우는 `failed` 상태로 종료. Notion Status는 마지막 성공 단계에 머무릅니다.
-→ 재인증 후 `devagent resume <project>` 로 이어서 가능.
-
-### 부분 우회 옵션
-
-기획 고도화만 스킵 (Claude 호출 절감, 단 Planning 본체와 Review는 여전히 필요):
-```bash
-devagent plan <ID> --skip-enhancement
-```
+→ 실패 시 워크플로우는 `failed` 상태로 종료. Notion Status는 `Approved` 로 복귀합니다.
+→ 재인증 후 `devagent resume <project>` 또는 `devagent build <ID>` 재실행으로 이어서 가능.
 
 > ⚠️ Claude/Codex **둘 다 완전 우회는 불가능**합니다. 두 CLI 없이는 dev-agent 자체가 동작하지 않습니다.
 

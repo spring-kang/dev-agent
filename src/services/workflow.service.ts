@@ -15,15 +15,12 @@ import type {
   WorkflowRequest,
   WorkflowResult,
   WorkflowStatus,
-  WorkflowPhase,
 } from "../types/workflow.js";
 import type { WorkflowConfig } from "../types/config.js";
-import type { PhaseStartEvent } from "../types/events.js";
 import { PreflightError, WorkflowServiceError } from "../types/errors.js";
-import type { PlanningEnhancer } from "../integrations/planning-enhancer.js";
 import type { NotionStatusSync } from "../integrations/notion-status-sync.js";
 import type { NotionArtifactSync } from "../integrations/notion-artifact-sync.js";
-import type { EnhancedPlan } from "../types/integrations.js";
+import type { NotionClient } from "../integrations/notion-client.js";
 
 const MAX_PARALLEL_WORKFLOWS = 5;
 
@@ -44,18 +41,22 @@ export class WorkflowService {
     private readonly monitoringService: MonitoringService,
     private readonly logger: Logger,
     private readonly eventEmitter?: EventEmitter,
-    private readonly planningEnhancer?: PlanningEnhancer,
     private readonly notionStatusSync?: NotionStatusSync,
     private readonly notionArtifactSync?: NotionArtifactSync,
+    private readonly notionClient?: NotionClient,
   ) {}
 
   /**
    * 워크플로우 실행 (Facade)
+   *
+   * inlineSpec 옵션이 주어지면 Planning을 스킵하고 해당 본문을 Codex 구현 명세로 직접 전달.
+   * (Notion → Codex 직접 흐름용)
    */
   async execute(
     projectPath: string,
     taskDescription: string,
     cliOverrides?: Partial<WorkflowConfig>,
+    extras?: { inlineSpec?: string; inlineSpecSource?: string },
   ): Promise<WorkflowResult> {
     // 1. Preflight 검증
     const preflight = await this.preflight(projectPath, cliOverrides);
@@ -73,6 +74,8 @@ export class WorkflowService {
       projectPath,
       taskDescription,
       config: preflight.config,
+      ...(extras?.inlineSpec ? { inlineSpec: extras.inlineSpec } : {}),
+      ...(extras?.inlineSpecSource ? { inlineSpecSource: extras.inlineSpecSource } : {}),
     };
 
     // 3. 워크플로우 디렉토리 초기화
@@ -96,108 +99,27 @@ export class WorkflowService {
   }
 
   /**
-   * Notion task → Plan 단계만 실행
-   * 1) enhanceFromTask 로 기획 고도화
-   * 2) WorkspaceManager.initWorkflowDirs(archiveExisting=true) 로 기존 current 백업
-   * 3) Orchestrator.executePlanOnly 호출 → Planning 만 실행
-   * 4) Notion Status → "Plan Review" 로 동기화 (statusSync.syncForPhase 직접 호출)
-   * 5) state.planningCompleted = true 저장
+   * Notion task → Build 실행 (단순화된 흐름)
+   *
+   * 전제: 사용자가 CLI에서 직접 `claude`로 기획을 작성/검토하고,
+   *       Notion task의 Status를 "Approved"로 직접 전이시킨 상태.
+   *
+   * 흐름:
+   *   1) Notion Status="Approved" 검증 (실패 시 즉시 거부)
+   *   2) Notion task properties(projectPath, title) + 본문 markdown 로드
+   *   3) Notion 본문을 implementation spec으로 그대로 Codex에 전달
+   *      (별도 planning enhancer/Claude 호출 없음)
+   *   4) Implementation → Commit → Review(Sonnet) → PR
+   *   5) Status는 phase 이벤트 기반 sync(In Progress → In Review → Done)에 위임
    */
-  async executeFromNotionPlanOnly(
-    notionPageId: string,
-    options?: {
-      projectPath?: string;
-      cliOverrides?: Partial<WorkflowConfig>;
-      skipClaudeEnhancement?: boolean;
-    },
-  ): Promise<{
-    enhancedPlan: EnhancedPlan;
-    workflowId: string;
-    artifactsPath: string;
-  }> {
-    if (!this.planningEnhancer) {
-      throw new WorkflowServiceError(
-        "Notion 통합이 구성되지 않았습니다. integrations.json 에 Notion 인증을 등록하세요.",
-        "recoverable",
-      );
-    }
-
-    this.logger.info(`Notion task 기획 단계 시작: ${notionPageId}`);
-
-    // 1) 기획 고도화
-    const enhancedPlan = await this.planningEnhancer.enhanceFromTask(
-      notionPageId,
-      { skipClaude: options?.skipClaudeEnhancement },
-    );
-    this.logger.info(
-      `기획 고도화 완료: ${enhancedPlan.taskTitle} (참조 페이지 ${enhancedPlan.context.task.referencedPages.length}개)`,
-    );
-
-    const resolvedProjectPath =
-      options?.projectPath?.trim() ||
-      enhancedPlan.context.task.projectPath.trim();
-    if (!resolvedProjectPath) {
-      throw new WorkflowServiceError(
-        "프로젝트 경로가 지정되지 않았습니다. Notion task 의 'Project Path' 속성이나 인자로 전달하세요.",
-        "recoverable",
-      );
-    }
-
-    // 2) Preflight
-    const preflight = await this.preflight(resolvedProjectPath, options?.cliOverrides);
-    if (!preflight.valid) {
-      throw new PreflightError(preflight.errors);
-    }
-    for (const warning of preflight.warnings) {
-      this.logger.warn(warning);
-    }
-
-    // 3) 워크스페이스 초기화 (기존 current 가 있으면 archive 로 백업 후 새로 생성)
-    await this.workspaceManager.initWorkflowDirs(resolvedProjectPath, {
-      archiveExisting: true,
-    });
-
-    // 4) Orchestrator.executePlanOnly
-    const request: WorkflowRequest = {
-      projectPath: resolvedProjectPath,
-      taskDescription: enhancedPlan.enhancedTaskDescription,
-      config: preflight.config,
-    };
-
-    this.monitoringService.start("pending", resolvedProjectPath, enhancedPlan.taskTitle);
-    try {
-      const result = await this.orchestrator.executePlanOnly(request);
-
-      // 5) Notion Status → Plan Review (실패해도 워크플로우는 성공)
-      if (this.notionStatusSync) {
-        await this.notionStatusSync.setStatusDirect(notionPageId, "Plan Review");
-      }
-
-      return {
-        enhancedPlan,
-        workflowId: result.workflowId,
-        artifactsPath: result.artifactsPath,
-      };
-    } finally {
-      this.monitoringService.stop();
-    }
-  }
-
-  /**
-   * Notion task → Build 단계만 실행
-   * 1) Notion Status 조회 → "Approved" 가 아니면 즉시 거부
-   * 2) state 복원 → planningCompleted 검증
-   * 3) Orchestrator.executeBuildOnly 호출
-   * 4) Notion Status 동기화는 기존 phase 이벤트 기반 sync 에 위임
-   */
-  async executeFromNotionBuildOnly(
+  async executeBuildFromNotion(
     notionPageId: string,
     options?: {
       projectPath?: string;
       cliOverrides?: Partial<WorkflowConfig>;
     },
   ): Promise<WorkflowResult> {
-    if (!this.notionStatusSync) {
+    if (!this.notionStatusSync || !this.notionClient) {
       throw new WorkflowServiceError(
         "Notion 통합이 구성되지 않았습니다. integrations.json 에 Notion 인증을 등록하세요.",
         "recoverable",
@@ -206,7 +128,7 @@ export class WorkflowService {
 
     this.logger.info(`Notion task 개발 단계 시작: ${notionPageId}`);
 
-    // 1) Notion Status 검증
+    // 1) Notion Status 검증 (Approved만 통과)
     let currentStatus = "";
     try {
       currentStatus = await this.notionStatusSync.fetchCurrentStatus(notionPageId);
@@ -222,147 +144,79 @@ export class WorkflowService {
     if (currentStatus !== "Approved") {
       throw new WorkflowServiceError(
         `Status가 Approved가 아닙니다 (현재: "${currentStatus || "(없음)"}"). ` +
-          `Notion 에서 승인 후 다시 실행하세요.`,
+          `claude로 기획을 마치고 Notion에서 Status를 "Approved"로 변경한 뒤 다시 실행하세요.`,
         "recoverable",
       );
     }
 
-    // 2) 프로젝트 경로 결정
-    const resolvedProjectPath = options?.projectPath?.trim();
-    if (!resolvedProjectPath) {
+    // 2) Notion task 상세 로드 (본문 = 기획서)
+    const task = await this.notionClient.getTask(notionPageId);
+    if (!task) {
       throw new WorkflowServiceError(
-        "프로젝트 경로가 지정되지 않았습니다. --project 옵션 또는 rc 설정으로 전달하세요.",
+        `Notion 페이지를 찾을 수 없거나 접근 권한이 없습니다 (page=${notionPageId}). ` +
+          `Notion에서 integration이 페이지에 연결되었는지 확인하세요.`,
         "recoverable",
       );
     }
 
-    // 3) state 검증
-    const state = await this.stateManager.restore(resolvedProjectPath);
-    if (!state) {
+    const inlineSpec = task.bodyMarkdown.trim();
+    if (inlineSpec.length === 0) {
       throw new WorkflowServiceError(
-        "기획 단계 산출물이 없습니다. 먼저 `devagent plan <pageId>` 를 실행하세요.",
-        "recoverable",
-      );
-    }
-    if (state.planningCompleted !== true) {
-      throw new WorkflowServiceError(
-        "기획이 완료되지 않은 워크플로우입니다.",
+        `Notion task 본문이 비어 있습니다 (page=${notionPageId}). ` +
+          `claude로 기획서를 작성해 task 본문에 채운 뒤 다시 실행하세요.`,
         "recoverable",
       );
     }
 
-    // 4) Notion sync 등록 (기존 workflowId 재사용)
-    const statusSync = this.notionStatusSync;
-    const artifactSync = this.notionArtifactSync;
-    statusSync.registerWorkflow(state.workflowId, notionPageId);
-    statusSync.start();
-    if (artifactSync) {
-      artifactSync.registerWorkflow(state.workflowId, notionPageId, resolvedProjectPath);
-      artifactSync.start();
-    }
-
-    // 5) Orchestrator.executeBuildOnly
-    this.monitoringService.start(state.workflowId, resolvedProjectPath, state.taskDescription);
-    try {
-      const result = await this.orchestrator.executeBuildOnly(resolvedProjectPath);
-      return result;
-    } finally {
-      this.monitoringService.stop();
-      statusSync.stop();
-      if (artifactSync) artifactSync.stop();
-    }
-  }
-
-  /**
-   * Notion task 기반 워크플로우 실행
-   * 1) Notion DB row + 본문 + 참조 페이지로 상세 기획서 자동 생성
-   * 2) 워크플로우 실행 (projectPath는 Notion 속성 우선, 인자값으로 override 가능)
-   * 3) 진행 단계에 따라 Notion Status 속성 자동 전이
-   */
-  async executeFromNotion(
-    notionPageId: string,
-    options?: {
-      projectPath?: string;
-      cliOverrides?: Partial<WorkflowConfig>;
-      skipClaudeEnhancement?: boolean;
-      statusMapping?: Partial<Record<WorkflowPhase, string>>;
-    },
-  ): Promise<WorkflowResult & { enhancedPlan: EnhancedPlan }> {
-    if (!this.planningEnhancer) {
-      throw new WorkflowServiceError(
-        "Notion 통합이 구성되지 않았습니다. integrations.json에 Notion 인증을 등록하세요.",
-        "recoverable",
-      );
-    }
-
-    this.logger.info(`Notion task 기반 워크플로우 시작: ${notionPageId}`);
-
-    // 1) 상세 기획서 생성
-    const enhancedPlan = await this.planningEnhancer.enhanceFromTask(
-      notionPageId,
-      { skipClaude: options?.skipClaudeEnhancement },
-    );
-
-    this.logger.info(
-      `기획 고도화 완료: ${enhancedPlan.taskTitle} (참조 페이지 ${enhancedPlan.context.task.referencedPages.length}개)`,
-    );
-
-    // projectPath 결정: 인자 우선, 없으면 Notion 속성, 없으면 에러
+    // 3) 프로젝트 경로 결정 (CLI > rc > Notion 속성)
     const resolvedProjectPath =
-      options?.projectPath?.trim() ||
-      enhancedPlan.context.task.projectPath.trim();
-
+      options?.projectPath?.trim() || task.projectPath.trim();
     if (!resolvedProjectPath) {
       throw new WorkflowServiceError(
-        "프로젝트 경로가 지정되지 않았습니다. Notion task의 'Project Path' 속성이나 인자로 전달하세요.",
+        "프로젝트 경로가 지정되지 않았습니다. --project 옵션, .devagentrc, 또는 Notion task의 'Project Path' 속성 중 하나로 전달하세요.",
         "recoverable",
       );
     }
 
-    // 2) 상태/산출물 동기화 시작 - 첫 phase:start 이벤트로 workflowId 캡처
-    //    하나의 captureHandler 안에서 두 sync를 모두 등록한다.
+    // 4) 일반 워크플로우 실행 (taskDescription = task 제목 + 본문)
+    //    inline spec은 별도 경로로 전달 (Orchestrator → Pipeline → CodexAgent.inlineSpec)
+    const taskDescription = `${task.title}\n\n${inlineSpec}`;
+
+    // 5) phase:start 이벤트로 workflowId 캡처 후 Notion sync 시작
     let syncStarted = false;
     const statusSync = this.notionStatusSync;
     const artifactSync = this.notionArtifactSync;
     const bus = this.eventEmitter;
-    let captureHandler: ((event: PhaseStartEvent) => void) | undefined;
+    let captureHandler: ((event: import("../types/events.js").PhaseStartEvent) => void) | undefined;
 
-    if ((statusSync || artifactSync) && bus) {
-      captureHandler = (event: PhaseStartEvent): void => {
+    if (bus) {
+      captureHandler = (event): void => {
         if (syncStarted) return;
         syncStarted = true;
-        if (statusSync) {
-          statusSync.registerWorkflow(event.workflowId, notionPageId);
-          statusSync.start();
-        }
+        statusSync.registerWorkflow(event.workflowId, notionPageId);
+        statusSync.start();
         if (artifactSync) {
-          artifactSync.registerWorkflow(
-            event.workflowId,
-            notionPageId,
-            resolvedProjectPath,
-          );
+          artifactSync.registerWorkflow(event.workflowId, notionPageId, resolvedProjectPath);
           artifactSync.start();
         }
       };
       bus.once("phase:start", captureHandler);
-    } else if ((statusSync || artifactSync) && !bus) {
-      this.logger.warn("EventEmitter 미주입 - Notion 자동 동기화 비활성화");
     }
 
-    // 3) 워크플로우 실행
     try {
       const result = await this.execute(
         resolvedProjectPath,
-        enhancedPlan.enhancedTaskDescription,
+        taskDescription,
         options?.cliOverrides,
+        { inlineSpec, inlineSpecSource: `notion:${notionPageId}` },
       );
-      return { ...result, enhancedPlan };
+      return result;
     } finally {
       if (bus && captureHandler && !syncStarted) {
         bus.off("phase:start", captureHandler);
       }
       if (syncStarted) {
-        if (statusSync) statusSync.stop();
+        statusSync.stop();
         if (artifactSync) artifactSync.stop();
       }
     }

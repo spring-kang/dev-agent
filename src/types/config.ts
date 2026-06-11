@@ -10,6 +10,13 @@ export interface WorkflowConfig {
   codexTimeout: number;
   prIncludeReviewSummary: boolean;
   autoCommit: boolean;
+  /**
+   * Claude CLI 리뷰 시 사용할 모델 식별자.
+   * - 예: "claude-sonnet-4-5-20250929" (권장 - Sonnet은 리뷰 품질 대비 비용 효율적)
+   * - 비어 있으면 claude CLI 기본 모델 사용
+   * - claude CLI에 --model <id> 인자로 전달됨
+   */
+  reviewModel: string;
 }
 
 export type LogLevel = "debug" | "info" | "warn" | "error";
@@ -29,6 +36,8 @@ export const DEFAULT_CONFIG: Readonly<WorkflowConfig> = {
   codexTimeout: 600_000,
   prIncludeReviewSummary: true,
   autoCommit: true,
+  // 기획은 사용자가 직접 claude로 진행 → 리뷰는 비용/품질 균형이 좋은 Sonnet으로 고정 기본값.
+  reviewModel: "claude-sonnet-4-5-20250929",
 };
 
 export const CONFIG_KEYS = Object.keys(DEFAULT_CONFIG) as (keyof WorkflowConfig)[];
@@ -117,5 +126,12 @@ export const CONFIG_VALIDATION_RULES: ConfigValidationRule[] = [
     key: "autoCommit",
     validate: (v) => typeof v === "boolean",
     message: "autoCommit은 boolean이어야 합니다",
+  },
+  {
+    key: "reviewModel",
+    // 빈 문자열 허용 (= claude CLI 기본 모델 사용)
+    // 비어있지 않으면 영문/숫자/하이픈/점 조합만 허용 (CLI 인자 안전성)
+    validate: (v) => typeof v === "string" && (v.length === 0 || /^[a-zA-Z0-9.\-]+$/.test(v)),
+    message: "reviewModel은 영문/숫자/하이픈/점만 사용 가능하거나 빈 문자열이어야 합니다",
   },
 ];

@@ -20,7 +20,6 @@ import { WorkflowService } from "./services/workflow.service.js";
 import { CLI } from "./cli/cli.js";
 import { NotionConfigManager } from "./integrations/notion-config.js";
 import { NotionClient } from "./integrations/notion-client.js";
-import { PlanningEnhancer } from "./integrations/planning-enhancer.js";
 import { NotionStatusSync } from "./integrations/notion-status-sync.js";
 import { NotionBlockAppender } from "./integrations/notion-block-appender.js";
 import { NotionArtifactSync } from "./integrations/notion-artifact-sync.js";
@@ -48,7 +47,6 @@ export interface WebContainer extends Container {
 interface IntegrationServices {
   notionConfig: NotionConfigManager;
   notionClient?: NotionClient;
-  planningEnhancer?: PlanningEnhancer;
   notionStatusSync?: NotionStatusSync;
   notionArtifactSync?: NotionArtifactSync;
 }
@@ -69,7 +67,6 @@ async function assembleIntegrations(
     }
 
     const notionClient = new NotionClient(cfg.auth, logger, cfg.propertyMapping);
-    const planningEnhancer = new PlanningEnhancer(notionClient, logger);
     const notionStatusSync = new NotionStatusSync(
       notionClient,
       eventEmitter,
@@ -86,7 +83,6 @@ async function assembleIntegrations(
     return {
       notionConfig,
       notionClient,
-      planningEnhancer,
       notionStatusSync,
       notionArtifactSync,
     };
@@ -119,9 +115,9 @@ export async function createContainerAsync(): Promise<Container> {
     core.monitoringService,
     core.logger,
     core.eventEmitter,
-    integrations.planningEnhancer,
     integrations.notionStatusSync,
     integrations.notionArtifactSync,
+    integrations.notionClient,
   );
 
   const cli = new CLI(
@@ -130,6 +126,7 @@ export async function createContainerAsync(): Promise<Container> {
     core.workspaceManager,
     core.logger,
     integrations.notionConfig,
+    integrations.notionClient,
   );
   return { cli, logger: core.logger };
 }
@@ -150,9 +147,9 @@ export async function createWebContainer(): Promise<WebContainer> {
     core.monitoringService,
     core.logger,
     core.eventEmitter,
-    integrations.planningEnhancer,
     integrations.notionStatusSync,
     integrations.notionArtifactSync,
+    integrations.notionClient,
   );
 
   const cli = new CLI(
@@ -161,6 +158,7 @@ export async function createWebContainer(): Promise<WebContainer> {
     core.workspaceManager,
     core.logger,
     integrations.notionConfig,
+    integrations.notionClient,
   );
 
   return {
@@ -204,7 +202,8 @@ async function buildCore(): Promise<CoreServices> {
   const globalConfig = await configManager.load();
   const claudeTimeout = globalConfig.value.claudeTimeout;
   const codexTimeout = globalConfig.value.codexTimeout;
-  const claudeAgent = new ClaudeAgent(logger, claudeTimeout);
+  const reviewModel = globalConfig.value.reviewModel;
+  const claudeAgent = new ClaudeAgent(logger, claudeTimeout, reviewModel);
   const codexAgent = new CodexAgent(logger, codexTimeout);
 
   // ── Phase 3: U-04 Git & PR ──
