@@ -15,7 +15,11 @@ dev-agent 의 새로운 흐름은 **기획은 사람(+Claude Code)이, 구현은
 - "Notion task `<pageId>` 기획해줘"
 - "이 티켓 요구사항/구현 명세/테스트 시나리오 정리해줘"
 - "dev-agent 로 돌릴 수 있게 명세 다듬어줘"
+- "aidlc 설계 참고해서 기획해줘" / "이 모듈 설계대로 명세 만들어줘"
 - 사용자가 Notion URL/페이지 ID 를 던지며 plan 단계를 시작하려는 모든 경우
+
+> 프로젝트에 `aidlc-docs/` 가 있으면 (AI-DLC 사전 설계 프로젝트) — Step 2.5 가 자동으로
+> 관련 유닛 설계 문서를 찾아 읽어 명세에 반영한다. 사용자가 따로 경로를 주지 않아도 된다.
 
 > **주의**: 구현(Codex spawn) 은 이 스킬의 범위가 아니다.
 > 사용자가 Notion 에서 Status 를 "Approved" 로 바꾼 뒤 `devagent build <pageId>` 로 실행한다.
@@ -54,6 +58,62 @@ devagent notion pull <pageIdOrUrl> -o /tmp/devagent-task.md
 - Notion 본문에 명시된 **대상 파일/경로** 가 있으면 해당 파일들을 `Read` 로 읽는다.
 - 명시가 없으면 `Glob`/`Grep` 으로 후보를 찾아 사용자에게 어느 범위인지 1회 확인한다.
 - 절대 추측만으로 명세를 작성하지 않는다 — 모르면 묻는다.
+
+### Step 2.5 — AI-DLC 설계 문서 자동 참조 (프로젝트에 `aidlc-docs/` 가 있을 때)
+
+기획 대상 프로젝트 루트에 **`aidlc-docs/` 디렉토리가 존재하면**, 그 안의 설계 문서를
+명세 작성의 1차 근거로 **반드시** 읽는다. (AI-DLC 방식으로 사전 설계된 프로젝트)
+
+> 프로젝트 루트는 다음 순서로 판단: ① 사용자가 알려준 경로 → ② Notion `Project Path` 속성
+> → ③ 현재 claude 가 열린 작업 디렉토리. `aidlc-docs/aidlc-state.md` 가 보이면 AI-DLC 프로젝트로 간주.
+
+#### 2.5-1. 유닛(모듈) 식별
+
+AI-DLC 프로젝트는 `aidlc-docs/construction/<unit>/` 형태로 **모듈(유닛)별** 설계가 나뉘어 있다.
+다음 순서로 이 task 가 어느 유닛인지 식별한다:
+
+1. `Glob` 로 유닛 목록 확인: `aidlc-docs/construction/*/`
+   (예: auth, identity, matching, interview, learning, community, admin,
+   notification, filestorage, raginfra, seminar, aigateway, system, scaffolding)
+2. **Notion task 제목·본문의 키워드** 를 유닛 폴더명/도메인과 매칭한다.
+   - 명시적 태그 우선: 제목에 `[matching]`, `[auth]` 처럼 유닛명이 있으면 그대로 사용.
+   - 키워드 매칭: "로그인/회원가입" → `auth`, "팀 매칭/공모전" → `matching`,
+     "AI 면접" → `interview`, "강의/학습" → `learning` 등.
+3. 매칭이 **애매하거나 2개 이상** 후보면 — 후보 유닛 목록을 제시하고 **사용자에게 1회 확인**한다.
+   추측으로 단정하지 않는다.
+
+#### 2.5-2. 관련 설계 문서 Read
+
+식별된 유닛이 `<unit>` 일 때, 다음을 `Read` 로 읽는다 (존재하는 것만):
+
+- **유닛 설계** (가장 중요):
+  - `aidlc-docs/construction/<unit>/functional-design/functional-design.md`
+  - `aidlc-docs/construction/<unit>/functional-design/domain-entities.md`
+  - `aidlc-docs/construction/<unit>/functional-design/business-rules.md`
+  - `aidlc-docs/construction/<unit>/functional-design/business-logic-model.md`
+- **공통 설계** (시스템 전반 — 필요한 범위만):
+  - `aidlc-docs/inception/application-design/services.md`
+  - `aidlc-docs/inception/application-design/components.md`
+  - `aidlc-docs/inception/user-stories/stories.md` (관련 US-* 스토리만 발췌)
+  - `aidlc-docs/inception/requirements/requirements.md` (관련 NFR/요구사항만)
+- **진행 상태**: `aidlc-docs/aidlc-state.md` (현재 단계·승인 상태·제약 파악)
+
+> ⚠️ 토큰 절약: 전체를 무차별로 읽지 말고, **이 task 유닛과 직접 관련된 문서**만 선별해 읽는다.
+> 공통 문서는 관련 섹션만 발췌 인용한다.
+
+#### 2.5-3. 명세에 반영 + 추적성 유지
+
+- 산출물(특히 `implementation-spec.md`)에 **참조한 설계 문서 경로를 명시**한다:
+  ````markdown
+  ## 참고 설계 (AI-DLC)
+  - aidlc-docs/construction/<unit>/functional-design/domain-entities.md
+  - aidlc-docs/inception/application-design/services.md
+  ````
+- 설계 문서의 **엔티티·경계 규칙(BR-*)·SPI/API 윤곽·의존 모듈**을 명세에 그대로 승계한다.
+  새로 발명하지 말고, 설계와 **충돌하면 사용자에게 알린다**.
+- 이 경로 목록은 Notion 본문 push 시에도 함께 올라가야, 이후 `build` 단계의 Codex·리뷰어가
+  **같은 설계를 참조**할 수 있다 (build 는 코드가 있는 PC 의 `aidlc-docs/` 를 직접 보거나,
+  Notion 본문에 적힌 경로/요약을 spec 으로 받는다).
 
 ### Step 3 — 산출물 3종 작성
 
