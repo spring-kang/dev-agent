@@ -160,6 +160,11 @@ export class GitManager {
       return prUrl;
     } catch (error) {
       if (error instanceof GitError) {
+        // gh가 출력한 실제 stderr를 로그 파일에도 남겨 사후 진단을 가능하게 한다.
+        const detail = error.stderr.trim();
+        this.logger.error(
+          `PR 생성 실패 (브랜치=${request.branchName})${detail ? `: ${detail}` : ""}`,
+        );
         throw new GitPrError(error.stderr, request.projectPath);
       }
       throw error;
