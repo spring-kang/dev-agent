@@ -93,8 +93,17 @@ Notion Status 자동 전이 (build 단계만):
 ```bash
 git clone https://github.com/spring-kang/dev-agent.git
 cd dev-agent
-./setup.sh       # 의존성 설치 + TypeScript 빌드 + 웹 빌드
+./setup.sh       # macOS/Linux/WSL — 의존성 설치 + TypeScript 빌드 + 웹 빌드
 ```
+
+Windows(네이티브 PowerShell):
+
+```powershell
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+.\setup.ps1      # setup.sh와 동일한 7단계 수행
+```
+
+> Windows 상세 절차(WSL 포함)는 [SETUP.md](./SETUP.md#-windows-세팅-네이티브--wsl) 참조.
 
 ### 빌드 (수동)
 
@@ -178,7 +187,7 @@ devagent run \
 | 옵션 | 설명 | 기본값 |
 |---|---|---|
 | `-p, --project <path>` | 프로젝트 경로 | rc 설정 또는 Notion `Project Path` 속성 |
-| `-m, --max-iterations <N>` | 최대 사이클 수 | 3 |
+| `-m, --max-iterations <N>` | 최대 사이클 수 | 5 |
 
 ### `run` 옵션
 
@@ -186,7 +195,7 @@ devagent run \
 |---|---|---|
 | `<task>` (인자) | 작업 설명 텍스트 | 필수 |
 | `-p, --project <path>` | 작업 대상 경로 | **필수** |
-| `-m, --max-iterations <N>` | 최대 사이클 수 | 3 |
+| `-m, --max-iterations <N>` | 최대 사이클 수 | 5 |
 | `--verbose` | 상세 로그 | false |
 
 ## `.devagentrc.json` (기본값 저장)
@@ -204,7 +213,7 @@ devagent run \
 {
   "task": "376e8963-3f9d-80bb-ac3e-d8818389de61",
   "projectPath": "/Users/me/projects/foo",
-  "maxIterations": 3,
+  "maxIterations": 5,
   "verbose": true,
   "notion": { "defaultDatabaseId": "<DB_ID>" }
 }
