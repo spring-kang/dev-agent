@@ -27,7 +27,8 @@ dev-agent 의 새로운 흐름은 **기획은 사람(+Claude Code)이, 구현은
 ## 입력
 
 - `pageId` 또는 Notion URL (32-hex 또는 UUID 포맷 모두 허용)
-- 선택: 프로젝트 경로 (보통 Notion `Project Path` 속성에서 읽음)
+- 선택: 프로젝트 경로 (보통 Notion `Project Path` 속성에서 읽음 — **build 실행용 로컬 경로**)
+- 선택: GitHub repo URL (Notion `Repository` 속성에서 읽음 — **기획 시 현황 파악용 진실의 원천**)
 
 ## 전제 조건
 
@@ -36,6 +37,7 @@ dev-agent 의 새로운 흐름은 **기획은 사람(+Claude Code)이, 구현은
 1. `devagent` CLI 가 설치되어 있고 PATH 에 등록됨 (`devagent --version` 확인)
 2. Notion 인증 완료 (`devagent notion test` 가 `✅` 응답)
 3. 대상 페이지가 Notion Integration 의 Connections 에 추가됨
+4. `gh` CLI 가 설치·인증됨 (`gh auth status`) — Step 2 의 GitHub repo 현황 조회용
 
 전제가 안 맞으면 `devagent notion status` 출력을 사용자에게 보여주고 멈춘다.
 
@@ -53,11 +55,35 @@ devagent notion pull <pageIdOrUrl> -o /tmp/devagent-task.md
 - 본문 첫 줄의 H1 (`# 제목`) 을 task 제목으로 인식한다.
 - `## 목표`, `## 컨텍스트`, `## 요구사항`, `## 수용 기준` 섹션이 있으면 그 구조를 그대로 살린다.
 
-### Step 2 — 코드베이스 컨텍스트 수집
+### Step 2 — 코드베이스 현황 파악 (GitHub repo main 우선)
 
-- Notion 본문에 명시된 **대상 파일/경로** 가 있으면 해당 파일들을 `Read` 로 읽는다.
-- 명시가 없으면 `Glob`/`Grep` 으로 후보를 찾아 사용자에게 어느 범위인지 1회 확인한다.
-- 절대 추측만으로 명세를 작성하지 않는다 — 모르면 묻는다.
+> 🎯 **원칙: "다음 task 가 어느 브랜치 위에서 시작되는가" 를 기준으로 현황을 본다.**
+> 로컬 체크아웃은 stale(머지 안 된 선행 PR 미반영, 기기마다 다름)할 수 있으므로,
+> **무엇이 이미 만들어졌나(엔티티/스키마/API 등)** 는 **GitHub repo 의 머지된 main + 열린 PR** 을
+> 진실의 원천으로 삼는다. 로컬 `Project Path` 는 build 실행 전용이다.
+
+#### 2-1. 대상 repo 식별 + 원격 현황 조회 (우선)
+
+1. Notion `Repository` 속성에서 GitHub repo URL 을 읽는다. (없으면 사용자에게 1회 확인)
+2. `gh` 로 **머지된 main 기준 현황** + **진행 중/머지된 PR** 을 파악한다:
+   ```bash
+   gh repo view <owner/repo>
+   gh pr list --repo <owner/repo> --state all --limit 20
+   ```
+   - 선행 task 가 **미머지 PR** 로만 존재하면(예: identity-1 = PR #1 미머지),
+     그 PR 브랜치를 현황 기준으로 삼는다: `gh pr diff <n> --repo <owner/repo>` /
+     `gh pr view <n> --repo <owner/repo>`.
+   - 특정 파일 내용 확인은 `gh api repos/<owner/repo>/contents/<path>?ref=<branch>` 또는
+     `gh browse` 로 확인한다.
+3. 본문에 명시된 **대상 파일/경로** 가 있으면 그 파일을 repo 기준으로 확인한다.
+4. 절대 추측만으로 명세를 작성하지 않는다 — 모르면 묻거나 repo 를 읽는다.
+
+#### 2-2. 로컬 보조 참조 (선택)
+
+- 로컬 체크아웃이 main 과 동기화돼 있고(`git -C <projectPath> fetch && git status` 로 확인),
+  미머지 선행 PR 의 영향이 없다면 로컬 파일을 보조로 `Read` 해도 된다.
+- 단, **로컬이 stale 하면 GitHub 현황을 우선**한다. 로컬 main 이 선행 PR 미반영이면 그 사실을 명시한다.
+- 설계 문서(`aidlc-docs/`)는 보통 repo·로컬 동일하므로 Step 2.5 에서 로컬/repo 어느 쪽이든 읽으면 된다.
 
 ### Step 2.5 — AI-DLC 설계 문서 자동 참조 (프로젝트에 `aidlc-docs/` 가 있을 때)
 
