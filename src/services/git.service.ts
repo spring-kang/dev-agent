@@ -26,6 +26,7 @@ export class GitService {
     projectPath: string,
     taskDescription: string,
     branchPrefix: string,
+    baseBranch: string,
   ): Promise<GitInitResult> {
     // 1. Dirty state 확인
     const dirtyState = await this.gitManager.checkDirtyState(projectPath);
@@ -40,7 +41,11 @@ export class GitService {
       this.logger.warn(`작업 중인 변경사항이 감지되었습니다: ${preview}${suffix}`);
     }
 
-    // 2. 브랜치 생성
+    // 2. base 브랜치 동기화 (origin fetch/checkout/pull --ff-only)
+    //    브랜치 생성 전에 항상 최신 base에서 분기하도록 보장한다.
+    await this.gitManager.syncBaseBranch(projectPath, baseBranch);
+
+    // 3. 브랜치 생성
     const branchName = await this.gitManager.createBranch(
       projectPath,
       taskDescription,

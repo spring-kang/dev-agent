@@ -17,6 +17,13 @@ export interface WorkflowConfig {
    * - claude CLI에 --model <id> 인자로 전달됨
    */
   reviewModel: string;
+  /**
+   * 작업 브랜치의 기준(base) 브랜치명.
+   * - 브랜치 생성 전 origin에서 이 브랜치를 fetch/checkout/pull(--ff-only)로 동기화한다.
+   * - PR 생성 시 base 브랜치로도 사용된다.
+   * - 기본값: "main" (저장소에 따라 "master" 등으로 변경 가능)
+   */
+  baseBranch: string;
 }
 
 export type LogLevel = "debug" | "info" | "warn" | "error";
@@ -38,6 +45,7 @@ export const DEFAULT_CONFIG: Readonly<WorkflowConfig> = {
   autoCommit: true,
   // 기획은 사용자가 직접 claude로 진행 → 리뷰는 비용/품질 균형이 좋은 Sonnet으로 고정 기본값.
   reviewModel: "claude-sonnet-4-5-20250929",
+  baseBranch: "main",
 };
 
 export const CONFIG_KEYS = Object.keys(DEFAULT_CONFIG) as (keyof WorkflowConfig)[];
@@ -133,5 +141,12 @@ export const CONFIG_VALIDATION_RULES: ConfigValidationRule[] = [
     // 비어있지 않으면 영문/숫자/하이픈/점 조합만 허용 (CLI 인자 안전성)
     validate: (v) => typeof v === "string" && (v.length === 0 || /^[a-zA-Z0-9.\-]+$/.test(v)),
     message: "reviewModel은 영문/숫자/하이픈/점만 사용 가능하거나 빈 문자열이어야 합니다",
+  },
+  {
+    key: "baseBranch",
+    // git 브랜치명 안전 문자만 허용 (영문/숫자/점/하이픈/슬래시/언더스코어), 비어있지 않아야 함
+    validate: (v) =>
+      typeof v === "string" && v.length > 0 && v.length <= 100 && /^[A-Za-z0-9._/\-]+$/.test(v),
+    message: "baseBranch는 비어있지 않은 git 브랜치명(영문/숫자/./-/_// )이어야 합니다",
   },
 ];

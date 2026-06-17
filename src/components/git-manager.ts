@@ -17,13 +17,65 @@ import {
   DEFAULT_COMMIT_MESSAGE,
   REWORK_COMMIT_MESSAGE,
 } from "../types/git.js";
-import { GitError, GitTimeoutError, GitPushError, GitPrError } from "../types/errors.js";
+import { GitError, GitTimeoutError, GitPushError, GitPrError, GitSyncError } from "../types/errors.js";
 import type { Logger } from "./logger.js";
 
 const execFileAsync = promisify(execFile);
 
 export class GitManager {
   constructor(private readonly logger: Logger) {}
+
+  /**
+   * base 브랜치를 origin과 동기화한다 (브랜치 생성 직전 호출).
+   *
+   * 순서:
+   *   1. git fetch origin <base>
+   *   2. git checkout <base>
+   *   3. git pull --ff-only origin <base>
+   *
+   * - origin remote가 없으면(로컬 전용 저장소) 동기화를 스킵한다.
+   * - 각 단계 실패 시 GitSyncError로 감싸 실제 stderr와 함께 명확한 원인을 노출한다.
+   *   (예: 잘못된 base 브랜치명, 원격 접근 권한, 미커밋 변경으로 인한 checkout 실패,
+   *    ff-only 불가(로컬이 origin보다 앞섬/분기) 등)
+   */
+  async syncBaseBranch(projectPath: string, baseBranch: string): Promise<void> {
+    // origin이 없으면 동기화할 대상이 없으므로 스킵 (로컬 검증용 임시 저장소 등)
+    const hasRemote = await this.hasRemote(projectPath);
+    if (!hasRemote) {
+      this.logger.info(
+        `원격(origin)이 설정되어 있지 않아 base 브랜치(${baseBranch}) 동기화를 건너뜁니다`,
+      );
+      return;
+    }
+
+    try {
+      // 1. 최신 origin/<base> 가져오기
+      await this.execGit(projectPath, ["fetch", "origin", baseBranch], GIT_NETWORK_TIMEOUT);
+      // 2. base 브랜치로 전환
+      await this.execGit(projectPath, ["checkout", baseBranch]);
+      // 3. fast-forward로만 갱신 (불가 시 명확히 실패)
+      await this.execGit(
+        projectPath,
+        ["pull", "--ff-only", "origin", baseBranch],
+        GIT_NETWORK_TIMEOUT,
+      );
+    } catch (error) {
+      if (error instanceof GitError) {
+        const detail = error.stderr.trim();
+        this.logger.error(
+          `base 브랜치(${baseBranch}) 동기화 실패${detail ? `: ${detail}` : ""}`,
+        );
+        throw new GitSyncError(baseBranch, error.stderr, projectPath, error);
+      }
+      if (error instanceof GitTimeoutError) {
+        this.logger.error(`base 브랜치(${baseBranch}) 동기화 타임아웃: ${error.command}`);
+        throw new GitSyncError(baseBranch, error.message, projectPath, error);
+      }
+      throw error;
+    }
+
+    this.logger.info(`base 브랜치 동기화 완료: ${baseBranch}`);
+  }
 
   /**
    * 브랜치 생성 (slug 자동 생성)

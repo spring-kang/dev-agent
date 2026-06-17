@@ -28,6 +28,7 @@ const ENV_KEY_MAP: Record<string, keyof WorkflowConfig> = {
   DEV_AGENT_LOG_LEVEL: "logLevel",
   DEV_AGENT_CLAUDE_TIMEOUT: "claudeTimeout",
   DEV_AGENT_CODEX_TIMEOUT: "codexTimeout",
+  DEV_AGENT_BASE_BRANCH: "baseBranch",
 };
 
 export class ConfigManager {

@@ -147,6 +147,18 @@ describe("ConfigManager", () => {
         manager.load(undefined, { claudeTimeout: 1000 }),
       ).rejects.toThrow(ConfigValidationError);
     });
+
+    it("빈 baseBranch이면 ConfigValidationError", async () => {
+      await expect(
+        manager.load(undefined, { baseBranch: "" }),
+      ).rejects.toThrow(ConfigValidationError);
+    });
+
+    it("공백 포함 baseBranch이면 ConfigValidationError", async () => {
+      await expect(
+        manager.load(undefined, { baseBranch: "feature branch" }),
+      ).rejects.toThrow(ConfigValidationError);
+    });
   });
 
   // ── load() - 파일 파싱 에러 ──
@@ -229,6 +241,19 @@ describe("ConfigManager", () => {
       process.env["DEV_AGENT_BRANCH_PREFIX"] = "custom";
       const config = await manager.load();
       expect(config.value.branchPrefix).toBe("custom");
+    });
+
+    it("baseBranch 기본값은 main", async () => {
+      const config = await manager.load();
+      expect(config.value.baseBranch).toBe("main");
+      expect(config.sources.baseBranch).toBe("default");
+    });
+
+    it("DEV_AGENT_BASE_BRANCH → string", async () => {
+      process.env["DEV_AGENT_BASE_BRANCH"] = "master";
+      const config = await manager.load();
+      expect(config.value.baseBranch).toBe("master");
+      expect(config.sources.baseBranch).toBe("env");
     });
   });
 

@@ -82,6 +82,7 @@ export class Orchestrator {
         request.projectPath,
         request.taskDescription,
         request.config.branchPrefix,
+        request.config.baseBranch,
       );
       state.branchName = gitInit.branchName;
       await this.stateManager.save(state);
@@ -255,7 +256,7 @@ export class Orchestrator {
         const finalizeResult = await this.gitService.finalize(
           request.projectPath,
           state.branchName,
-          "main",
+          request.config.baseBranch,
           this.buildFinalizeContext(state),
           request.config.prIncludeReviewSummary,
         );
@@ -324,7 +325,7 @@ export class Orchestrator {
         const finalizeResult = await this.gitService.finalize(
           request.projectPath,
           state.branchName,
-          "main",
+          request.config.baseBranch,
           context,
           request.config.prIncludeReviewSummary,
         );

@@ -177,6 +177,21 @@ export class GitTimeoutError extends AppError {
   }
 }
 
+export class GitSyncError extends AppError {
+  readonly code = "GIT_SYNC_ERROR" as const;
+  readonly severity = "recoverable" as const;
+  readonly baseBranch: string;
+  readonly stderr: string;
+  readonly cwd: string;
+
+  constructor(baseBranch: string, stderr: string, cwd: string, cause?: Error) {
+    super(`base 브랜치(${baseBranch}) 동기화 실패`, cause);
+    this.baseBranch = baseBranch;
+    this.stderr = stderr;
+    this.cwd = cwd;
+  }
+}
+
 export class GitPushError extends AppError {
   readonly code = "GIT_PUSH_ERROR" as const;
   readonly severity = "recoverable" as const;
@@ -339,6 +354,8 @@ export const ERROR_HINTS: Record<string, string> = {
   GIT_ERROR: "Git 저장소 상태를 확인하세요",
   GIT_PUSH_ERROR: "네트워크 연결 또는 원격 저장소 접근 권한을 확인하세요",
   GIT_PR_ERROR: "GitHub CLI(gh) 인증 상태를 확인하세요",
+  GIT_SYNC_ERROR:
+    "base 브랜치명(baseBranch 설정), 원격 접근 권한, 로컬 미커밋 변경 또는 ff-only 충돌 여부를 확인하세요",
   GIT_TIMEOUT: "네트워크 연결을 확인하세요",
   PREREQUISITE_ERROR: "'claude --version', 'codex --version' 명령으로 설치를 확인하세요",
   CONFIG_ERROR: "설정 파일 형식을 확인하세요",
