@@ -69,6 +69,8 @@ export const DEFAULT_COMMIT_MESSAGE = "Auto-generated code changes";
 export const REWORK_COMMIT_MESSAGE = "Rework based on review feedback";
 
 export const PR_TITLE_PREFIX = "[AI]";
+/** GitHub PR 제목 최대 길이 (GraphQL 제약). 초과 시 truncate. */
+export const MAX_PR_TITLE_LENGTH = 256;
 export const PR_AI_NOTICE = `> 이 PR은 AI 에이전트(dev-agent)에 의해 자동 생성되었습니다.
 > - Planning: Claude Code
 > - Implementation: Codex

@@ -10,7 +10,7 @@ import type {
   FinalizeResult,
   ReviewHistoryEntry,
 } from "../types/git.js";
-import { PR_TITLE_PREFIX, PR_AI_NOTICE } from "../types/git.js";
+import { PR_TITLE_PREFIX, PR_AI_NOTICE, MAX_PR_TITLE_LENGTH } from "../types/git.js";
 import type { Logger } from "../components/logger.js";
 
 export class GitService {
@@ -93,7 +93,7 @@ export class GitService {
 
     // 2. PR 본문 생성
     const prBody = this.buildPrBody(context, prIncludeReviewSummary);
-    const prTitle = `${PR_TITLE_PREFIX} ${context.taskDescription}`;
+    const prTitle = this.buildPrTitle(context.taskDescription);
 
     // 3. PR 생성
     const prUrl = await this.gitManager.createPullRequest({
@@ -105,6 +105,27 @@ export class GitService {
     });
 
     return { prUrl, branchName };
+  }
+
+  /**
+   * PR 제목 구성.
+   *
+   * - taskDescription은 `${task.title}\n\n${본문 마크다운}` 형태이므로
+   *   첫 줄(= task 제목)만 사용해 본문이 제목에 섞이지 않게 한다.
+   * - GitHub PR 제목은 최대 256자(GraphQL 제약)이므로 prefix 포함 길이를 맞춰
+   *   초과 시 말줄임표(…)로 truncate 한다.
+   */
+  private buildPrTitle(taskDescription: string): string {
+    const firstLine = (taskDescription.split("\n")[0] ?? "").trim();
+    const base = firstLine.length > 0 ? firstLine : taskDescription.trim();
+
+    const prefix = `${PR_TITLE_PREFIX} `;
+    const available = MAX_PR_TITLE_LENGTH - prefix.length;
+
+    const title =
+      base.length > available ? `${base.slice(0, available - 1)}\u2026` : base;
+
+    return `${prefix}${title}`;
   }
 
   /**
