@@ -99,6 +99,20 @@ export interface NotionPage {
   lastEditedTime: string;
 }
 
+/** 페이지에 달린 코멘트(댓글) 1건 */
+export interface NotionComment {
+  /** 코멘트 ID */
+  id: string;
+  /** 같은 스레드(토론) 묶음 ID */
+  discussionId: string;
+  /** 작성자 사용자 ID (이름은 별도 users 조회 필요 — 미조회 시 ID만) */
+  createdById: string;
+  /** 작성 시각 (ISO 8601) */
+  createdTime: string;
+  /** 코멘트 본문 (markdown inline) */
+  text: string;
+}
+
 // ── 기획 고도화 결과 ──
 
 export interface EnhancedPlan {

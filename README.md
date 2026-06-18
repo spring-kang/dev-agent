@@ -260,8 +260,14 @@ devagent run \
 | `devagent notion status` | 통합 상태 조회 |
 | `devagent notion status <pageId> <Status>` | 페이지 Status 직접 변경 (예: `Approved`) |
 | `devagent notion pull <pageId> [-o <file>]` | task 본문 markdown 추출 |
-| `devagent notion push <pageId> --from <file>` | markdown 파일을 본문에 append |
+| `devagent notion push <pageId> --from <file> [--replace]` | markdown 파일을 본문에 append (`--replace` 시 기존 본문 교체) |
+| `devagent notion comments <pageId> [-o <file>]` | 페이지의 (열린) 댓글 조회 — 기획 수정 반영용 |
 | `devagent rc` | 로드된 `.devagentrc` 출력 |
+
+> **기획 수정(댓글 반영)**: Notion 페이지에 댓글로 피드백을 남긴 뒤 claude 에서
+> "이 티켓 댓글 반영해줘" 라고 하면 devagent-planner 스킬이 댓글을 읽어
+> (`notion comments`) 명세에 반영하고 본문을 교체(`notion push --replace`)한다.
+> 댓글 resolve 와 Status 재전환(`Approved`)은 Notion UI 에서 직접 한다.
 
 ### `build` 옵션
 

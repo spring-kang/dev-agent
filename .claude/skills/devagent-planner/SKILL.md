@@ -17,6 +17,8 @@ dev-agent 의 새로운 흐름은 **기획은 사람(+Claude Code)이, 구현은
 - "dev-agent 로 돌릴 수 있게 명세 다듬어줘"
 - "aidlc 설계 참고해서 기획해줘" / "이 모듈 설계대로 명세 만들어줘"
 - 사용자가 Notion URL/페이지 ID 를 던지며 plan 단계를 시작하려는 모든 경우
+- **(수정 모드)** "이 티켓 댓글 반영해줘" / "`<pageId>` 댓글대로 기획 고쳐줘" /
+  "Notion 댓글 보고 명세 수정해줘" → 아래 **"수정 모드 (Notion 댓글 반영)"** 절차 사용
 
 > 프로젝트에 `aidlc-docs/` 가 있으면 (AI-DLC 사전 설계 프로젝트) — Step 2.5 가 자동으로
 > 관련 유닛 설계 문서를 찾아 읽어 명세에 반영한다. 사용자가 따로 경로를 주지 않아도 된다.
@@ -225,6 +227,50 @@ devagent notion push <pageIdOrUrl> --from <projectPath>/.ai-workflow/current/art
 devagent notion status <pageId> Approved
 ```
 
+## 수정 모드 (Notion 댓글 반영)
+
+이미 작성·push 된 기획에 대해 사용자가 **Notion 페이지에 댓글로 피드백**을 남긴 뒤
+"댓글 반영해줘" 라고 요청하면, 다음 절차로 본문을 갱신한다.
+
+> 전제: 처음 기획할 때처럼 Notion 인증·연결이 되어 있어야 한다. 댓글 조회는
+> Integration 에 **"Read comments"** 권한이 필요하다 (`devagent notion comments`로 확인).
+
+### R-1. 댓글 + 현재 본문 가져오기
+
+```bash
+devagent notion comments <pageIdOrUrl> -o /tmp/devagent-comments.md
+devagent notion pull     <pageIdOrUrl> -o /tmp/devagent-task.md
+```
+
+- 두 파일을 `Read` 로 읽는다.
+- `comments.md` 의 각 항목(`## 1. ...`)이 사용자의 수정 요청이다.
+- Notion API 는 **열린(미해결) 댓글만** 반환한다. (이미 resolve 한 댓글은 안 나온다)
+
+### R-2. 댓글 분석 + 명세 반영
+
+- 각 댓글을 **무엇을 어떻게 바꾸라는 지시**로 해석해 본문/산출물에 반영한다.
+- 댓글이 **모호하거나 기존 설계(`aidlc-docs/`)·요구사항과 충돌**하면 — 추측하지 말고
+  사용자에게 1회 확인한다.
+- 변경이 코드 구조에 영향을 주면 Step 2 / 2.5 처럼 repo·설계 문서를 다시 확인한다.
+- **커밋 메시지 형식 유지**: `## 커밋 메시지` 헤딩 + ` ```code block``` ` 또는
+  `커밋 메시지: \`feat(...)\`` 인라인 형식을 그대로 둔다 (백틱/펜스 없으면 추출 실패).
+
+### R-3. 본문 교체 (append 아님)
+
+수정된 명세 파일을 **`--replace`** 로 push 한다. (기존 본문 블록을 모두 지우고 새로 씀)
+
+```bash
+devagent notion push <pageIdOrUrl> --from <수정된 spec 파일> --replace
+```
+
+> ⚠️ `--replace` 는 페이지 본문을 통째로 교체한다. 부분 추가만 원하면 `--replace` 없이 append.
+
+### R-4. 마무리 안내 (사용자 몫)
+
+- **댓글 resolve**: Notion API 로는 댓글을 지우거나 resolve 할 수 없다 →
+  사용자가 Notion UI 에서 반영 완료된 댓글을 직접 resolve 하도록 안내한다.
+- **Status**: 수정 후 다시 검토하고 `Approved` 로 (재)전환하도록 안내한다.
+
 ## 절대 하지 말 것
 
 - ❌ Codex 호출 / 코드 직접 수정 — 이 스킬은 기획만 담당
@@ -232,15 +278,17 @@ devagent notion status <pageId> Approved
 - ❌ Notion Status 자동 변경 — 항상 사용자 손에 맡김
 - ❌ `implementation-spec.md` 의 커밋 메시지를 백틱 없이 적기 — 추출 실패함
 - ❌ 외부 도구 없이 명세 추측 — 모르면 묻거나 코드 읽기
+- ❌ 수정 모드에서 사용자 댓글을 임의로 무시·확대 해석 — 모호하면 1회 확인
 
 ## 사용 도구 요약
 
 | 단계 | 도구 |
 |---|---|
 | Notion 본문 가져오기 | `Bash` (`devagent notion pull`) |
+| Notion 댓글 가져오기 (수정 모드) | `Bash` (`devagent notion comments`) |
 | 본문/코드 읽기 | `Read`, `Glob`, `Grep` |
 | 산출물 작성 | `Write` (3개 markdown 파일) |
-| Notion 업로드 (선택) | `Bash` (`devagent notion push`) |
+| Notion 업로드 (선택) | `Bash` (`devagent notion push` / 수정 모드는 `--replace`) |
 
 ## 참고 — 이후 build 단계 흐름
 

@@ -306,14 +306,25 @@ export class CLI {
         await this.handleNotionPull(pageIdOrUrl, options);
       });
 
-    // push <pageId> --from <file> — 로컬 마크다운을 Notion 페이지 본문에 append
+    // push <pageId> --from <file> — 로컬 마크다운을 Notion 페이지 본문에 append/replace
     notionAliasCmd
       .command("push")
-      .description("로컬 마크다운 파일을 Notion 페이지 본문에 append")
+      .description("로컬 마크다운 파일을 Notion 페이지 본문에 append (--replace 시 본문 교체)")
       .argument("<pageIdOrUrl>", "Notion page ID 또는 URL")
-      .requiredOption("--from <path>", "append 할 마크다운 파일 경로")
+      .requiredOption("--from <path>", "올릴 마크다운 파일 경로")
+      .option("--replace", "기존 본문 블록을 모두 삭제하고 새 내용으로 교체")
       .action(async (pageIdOrUrl: string, options: Record<string, unknown>) => {
         await this.handleNotionPush(pageIdOrUrl, options);
+      });
+
+    // comments <pageId> — Notion 페이지 댓글 조회 (기획 수정 반영용)
+    notionAliasCmd
+      .command("comments")
+      .description("Notion 페이지의 (열린) 댓글 목록 조회")
+      .argument("<pageIdOrUrl>", "Notion page ID 또는 URL")
+      .option("-o, --output <path>", "markdown 파일로 저장 (생략 시 stdout)")
+      .action(async (pageIdOrUrl: string, options: Record<string, unknown>) => {
+        await this.handleNotionComments(pageIdOrUrl, options);
       });
 
     // rc — 현재 로드된 .devagentrc 출력 (디버깅용)
@@ -774,9 +785,61 @@ export class CLI {
     const appender = new NotionBlockAppender(notion.auth, this.logger);
     const pageId = this.extractPageId(pageIdOrUrl);
     const blocks = appender.markdownToBlocks(markdown);
-    await appender.appendBlocks(pageId, blocks);
 
-    console.log(`✅ Notion 페이지 ${pageId} 에 ${blocks.length}개 block append 완료`);
+    if (options["replace"]) {
+      const deleted = await appender.replaceBlocks(pageId, blocks);
+      console.log(
+        `✅ Notion 페이지 ${pageId} 본문 교체 완료 (기존 ${deleted}개 삭제 → 신규 ${blocks.length}개)`,
+      );
+    } else {
+      await appender.appendBlocks(pageId, blocks);
+      console.log(`✅ Notion 페이지 ${pageId} 에 ${blocks.length}개 block append 완료`);
+    }
+  }
+
+  /**
+   * `devagent notion comments <pageId> [-o file]`
+   * 페이지의 (열린) 댓글을 시간순으로 조회. 기획 수정 피드백 반영용.
+   */
+  private async handleNotionComments(
+    pageIdOrUrl: string,
+    options: Record<string, unknown>,
+  ): Promise<void> {
+    const client = await this.requireNotionClient();
+    const pageId = this.extractPageId(pageIdOrUrl);
+    const comments = await client.getComments(pageId);
+
+    if (comments.length === 0) {
+      const empty = `# 댓글 (${pageId})\n\n(열린 댓글이 없습니다)\n`;
+      const outputPath0 = options["output"] as string | undefined;
+      if (outputPath0) {
+        const { writeFile } = await import("node:fs/promises");
+        await writeFile(path.resolve(outputPath0), empty, "utf-8");
+        console.log(`✅ ${outputPath0} 에 저장 (댓글 0개)`);
+      } else {
+        console.log("(열린 댓글이 없습니다)");
+      }
+      return;
+    }
+
+    const lines: string[] = [`# 댓글 (${comments.length}개) — ${pageId}`, ""];
+    comments.forEach((c, idx) => {
+      const when = c.createdTime ? c.createdTime.slice(0, 16).replace("T", " ") : "";
+      lines.push(`## ${idx + 1}. ${when}${c.createdById ? ` · ${c.createdById}` : ""}`);
+      lines.push("");
+      lines.push(c.text || "(빈 댓글)");
+      lines.push("");
+    });
+    const content = lines.join("\n");
+
+    const outputPath = options["output"] as string | undefined;
+    if (outputPath) {
+      const { writeFile } = await import("node:fs/promises");
+      await writeFile(path.resolve(outputPath), content + "\n", "utf-8");
+      console.log(`✅ ${outputPath} 에 저장 (댓글 ${comments.length}개)`);
+    } else {
+      process.stdout.write(content + "\n");
+    }
   }
 
   /**

@@ -162,6 +162,55 @@ export class NotionBlockAppender {
   }
 
   /**
+   * 페이지의 기존 자식 블록을 모두 삭제(archive)한 뒤 새 블록을 append.
+   * `notion push --replace` 의 본체 — 기획 본문을 통째로 갈아끼울 때 사용.
+   */
+  async replaceBlocks(pageId: string, blocks: NotionBlockInput[]): Promise<number> {
+    const deleted = await this.deleteAllBlocks(pageId);
+    await this.appendBlocks(pageId, blocks);
+    return deleted;
+  }
+
+  /**
+   * 페이지의 모든 자식 블록을 삭제(archive)한다. 삭제한 블록 수 반환.
+   * Notion 의 DELETE /v1/blocks/{id} 는 블록을 archive 상태로 만든다.
+   */
+  async deleteAllBlocks(pageId: string): Promise<number> {
+    const ids = await this.fetchChildBlockIds(pageId);
+    for (const id of ids) {
+      await this.request(`/blocks/${id}`, { method: "DELETE" });
+    }
+    return ids.length;
+  }
+
+  /**
+   * 페이지 직속 자식 블록 ID 목록 (페이지네이션 처리).
+   */
+  private async fetchChildBlockIds(pageId: string): Promise<string[]> {
+    const normalizedId = this.normalizeId(pageId);
+    const ids: string[] = [];
+    let cursor: string | undefined;
+    let safety = 0;
+    do {
+      if (safety++ > 50) break;
+      const qs = cursor
+        ? `?start_cursor=${encodeURIComponent(cursor)}&page_size=100`
+        : "?page_size=100";
+      const res = (await this.request(
+        `/blocks/${normalizedId}/children${qs}`,
+        { method: "GET" },
+      )) as {
+        results: Array<{ id: string }>;
+        has_more: boolean;
+        next_cursor: string | null;
+      };
+      for (const b of res.results) ids.push(b.id);
+      cursor = res.has_more && res.next_cursor ? res.next_cursor : undefined;
+    } while (cursor);
+    return ids;
+  }
+
+  /**
    * 페이지에 짧은 코멘트 추가 (2000자 truncate).
    */
   async addComment(pageId: string, text: string): Promise<void> {

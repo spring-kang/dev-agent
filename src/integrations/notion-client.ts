@@ -23,6 +23,7 @@ import type {
   NotionTaskDetail,
   NotionPage,
   NotionUser,
+  NotionComment,
   NotionPropertyMapping,
 } from "../types/integrations.js";
 import { DEFAULT_NOTION_PROPERTY_MAPPING } from "../types/integrations.js";
@@ -235,6 +236,42 @@ export class NotionClient {
         rich_text: [{ type: "text", text: { content: text } }],
       }),
     });
+  }
+
+  /**
+   * 페이지에 달린 (미해결 포함) 댓글을 시간순으로 조회.
+   *
+   * Notion API 는 페이지 단위로 댓글을 노출하며, resolve(해결) 여부는
+   * REST API 로 구분되지 않는다 (열린 토론만 반환). Integration 에
+   * "Read comments" 권한이 있어야 한다.
+   */
+  async getComments(pageId: string): Promise<NotionComment[]> {
+    const all: NotionComment[] = [];
+    let cursor: string | undefined;
+    let safety = 0;
+    do {
+      if (safety++ > 50) break;
+      const base = `/comments?block_id=${this.normalizeId(pageId)}&page_size=100`;
+      const qs = cursor
+        ? `${base}&start_cursor=${encodeURIComponent(cursor)}`
+        : base;
+      const res = await this.request<{
+        results: NotionCommentObject[];
+        has_more: boolean;
+        next_cursor: string | null;
+      }>(qs);
+      for (const c of res.results) {
+        all.push({
+          id: c.id,
+          discussionId: c.discussion_id ?? "",
+          createdById: c.created_by?.id ?? "",
+          createdTime: c.created_time ?? "",
+          text: this.richText(c.rich_text),
+        });
+      }
+      cursor = res.has_more && res.next_cursor ? res.next_cursor : undefined;
+    } while (cursor);
+    return all;
   }
 
   // ── 내부 헬퍼: 페이지 블록 → markdown ──
@@ -564,6 +601,14 @@ interface NotionRichText {
     strikethrough?: boolean;
     code?: boolean;
   };
+}
+
+interface NotionCommentObject {
+  id: string;
+  discussion_id?: string;
+  created_time?: string;
+  created_by?: { id: string };
+  rich_text?: NotionRichText[];
 }
 
 interface NotionBlock {
