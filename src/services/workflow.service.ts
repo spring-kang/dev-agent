@@ -69,7 +69,16 @@ export class WorkflowService {
     projectPath: string,
     taskDescription: string,
     cliOverrides?: Partial<WorkflowConfig>,
-    extras?: { inlineSpec?: string; inlineSpecSource?: string },
+    extras?: {
+      inlineSpec?: string;
+      inlineSpecSource?: string;
+      /**
+       * TTY 진행 표시줄 억제 여부 (기본 false).
+       * 배치(동시) 빌드에서는 단일 MonitoringService 싱글톤을 여러 워크플로우가
+       * 공유하여 진행 표시가 서로 덮어써지고 타이머가 누수되므로 true 로 끈다.
+       */
+      suppressProgress?: boolean;
+    },
   ): Promise<WorkflowResult> {
     // 1. Preflight 검증
     const preflight = await this.preflight(projectPath, cliOverrides);
@@ -94,8 +103,13 @@ export class WorkflowService {
     // 3. 워크플로우 디렉토리 초기화
     await this.workspaceManager.initWorkflowDirs(projectPath);
 
-    // 4. 모니터링 시작
-    this.monitoringService.start("pending", projectPath, taskDescription);
+    // 4. 모니터링 시작 (배치 동시 실행 시 진행 표시줄은 끈다)
+    this.monitoringService.start(
+      "pending",
+      projectPath,
+      taskDescription,
+      !extras?.suppressProgress,
+    );
 
     try {
       // 5. Orchestrator 위임
@@ -235,7 +249,13 @@ export class WorkflowService {
         resolvedProjectPath,
         taskDescription,
         options?.cliOverrides,
-        { inlineSpec, inlineSpecSource: `notion:${notionPageId}` },
+        {
+          inlineSpec,
+          inlineSpecSource: `notion:${notionPageId}`,
+          // 배치 모드(liveStatusSync=false)는 동시 실행이라 공유 진행 표시줄이
+          // 서로 덮어써지고 타이머가 누수되므로 진행 표시를 끈다.
+          suppressProgress: !liveStatusSync,
+        },
       );
       return result;
     } finally {

@@ -70,8 +70,17 @@ export class MonitoringService {
 
   /**
    * 모니터링 시작
+   *
+   * @param showProgress TTY 진행 표시줄 사용 여부 (기본 true).
+   *   배치(동시) 실행에서는 단일 MonitoringService 싱글톤을 여러 워크플로우가
+   *   공유하여 currentPhase/startedAt 등 상태가 서로 덮어써지므로 false 로 끈다.
    */
-  start(workflowId: string, projectPath?: string, taskDescription?: string): void {
+  start(
+    workflowId: string,
+    projectPath?: string,
+    taskDescription?: string,
+    showProgress = true,
+  ): void {
     this.workflowId = workflowId;
     this.startedAt = Date.now();
     this.phases = [];
@@ -85,8 +94,8 @@ export class MonitoringService {
     this.eventEmitter.on("cycle:complete", this.handleCycleComplete);
     this.eventEmitter.on("workflow:end", this.handleWorkflowEnd);
 
-    // TTY 모드에서 진행 표시
-    if (process.stdout.isTTY) {
+    // TTY 모드에서 진행 표시 (배치 동시 실행 시에는 호출 측이 showProgress=false 로 끈다)
+    if (showProgress && process.stdout.isTTY) {
       this.startProgressDisplay();
     }
   }
@@ -169,6 +178,13 @@ export class MonitoringService {
   // ── 진행 표시 (TTY) ──
 
   private startProgressDisplay(): void {
+    // 멱등성 보장: 기존 타이머가 남아 있으면 먼저 정리한다.
+    // (start()가 재진입/중복 호출돼도 setInterval 핸들이 누수되지 않도록 방지)
+    if (this.progressTimer) {
+      clearInterval(this.progressTimer);
+      this.progressTimer = undefined;
+    }
+
     const spinnerFrames = ["\u280B", "\u2819", "\u2839", "\u2838", "\u283C", "\u2834", "\u2826", "\u2827", "\u2807", "\u280F"];
     let frameIndex = 0;
 
