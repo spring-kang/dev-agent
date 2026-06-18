@@ -39,6 +39,19 @@ export class GitManager {
    *    ff-only 불가(로컬이 origin보다 앞섬/분기) 등)
    */
   async syncBaseBranch(projectPath: string, baseBranch: string): Promise<void> {
+    // linked worktree(배치 빌드)인 경우, base 브랜치는 메인 워크트리에 이미
+    // 체크아웃되어 있어 `git checkout <base>` 가 충돌(already checked out)한다.
+    // 배치 흐름이 worktree 생성 시점에 base ref(origin/<base>)에 detached 로
+    // 고정하므로 여기서는 동기화를 스킵한다. createBranch 가 현재 HEAD(=base ref)
+    // 에서 분기한다.
+    if (await this.isLinkedWorktree(projectPath)) {
+      this.logger.info(
+        `linked worktree 감지: base 브랜치(${baseBranch}) 동기화 스킵 ` +
+          `(worktree는 생성 시 base ref에 고정됨)`,
+      );
+      return;
+    }
+
     // origin이 없으면 동기화할 대상이 없으므로 스킵 (로컬 검증용 임시 저장소 등)
     const hasRemote = await this.hasRemote(projectPath);
     if (!hasRemote) {
@@ -270,6 +283,78 @@ export class GitManager {
       return result.stdout.trim().length > 0;
     } catch {
       return false;
+    }
+  }
+
+  // ── worktree (배치 병렬 빌드용 격리) ──
+
+  /**
+   * linked worktree 여부 판별.
+   * - 메인 워크트리: `git-dir` == `git-common-dir` (둘 다 `.git`)
+   * - linked worktree: `git-dir`(`.git/worktrees/<name>`) != `git-common-dir`(`.git`)
+   * - git 저장소가 아니거나 명령 실패 시 false.
+   */
+  async isLinkedWorktree(projectPath: string): Promise<boolean> {
+    try {
+      const gitDir = await this.execGit(projectPath, ["rev-parse", "--git-dir"]);
+      const commonDir = await this.execGit(projectPath, ["rev-parse", "--git-common-dir"]);
+      return gitDir.stdout.trim() !== commonDir.stdout.trim();
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * 배치 병렬 빌드용 base ref 선해석.
+   * - origin 있으면 `origin/<base>` (배치가 사전 fetch 한 최신 원격 ref)
+   * - 없으면 로컬 `<base>`
+   */
+  async resolveWorktreeBaseRef(basePath: string, baseBranch: string): Promise<string> {
+    const hasRemote = await this.hasRemote(basePath);
+    return hasRemote ? `origin/${baseBranch}` : baseBranch;
+  }
+
+  /**
+   * 배치 빌드 전 base 브랜치를 한 번만 fetch 한다 (각 worktree가 동시 fetch 하여
+   * ref-lock 경합이 나는 것을 방지). origin 없으면 no-op.
+   */
+  async fetchBase(basePath: string, baseBranch: string): Promise<void> {
+    if (!(await this.hasRemote(basePath))) return;
+    await this.execGit(basePath, ["fetch", "origin", baseBranch], GIT_NETWORK_TIMEOUT);
+    this.logger.info(`배치 base fetch 완료: origin/${baseBranch}`);
+  }
+
+  /**
+   * detached HEAD 상태의 worktree 를 생성한다.
+   * `git worktree add --detach <worktreePath> <ref>`
+   * - ref 는 보통 `origin/<base>` (resolveWorktreeBaseRef 결과)
+   * - detached 이므로 base 브랜치를 점유하지 않아 병렬 worktree 간 충돌이 없다.
+   */
+  async addDetachedWorktree(
+    basePath: string,
+    worktreePath: string,
+    ref: string,
+  ): Promise<void> {
+    await this.execGit(basePath, ["worktree", "add", "--detach", worktreePath, ref]);
+    this.logger.info(`worktree 생성: ${worktreePath} @ ${ref}`);
+  }
+
+  /**
+   * worktree 제거 (작업 디렉토리 삭제) 후 prune. 실패는 warn 후 무시한다.
+   */
+  async removeWorktree(basePath: string, worktreePath: string): Promise<void> {
+    try {
+      await this.execGit(basePath, ["worktree", "remove", "--force", worktreePath]);
+      this.logger.info(`worktree 제거: ${worktreePath}`);
+    } catch (error) {
+      this.logger.warn(
+        `worktree 제거 실패 (${worktreePath}): ${(error as Error).message}`,
+      );
+    }
+    try {
+      await this.execGit(basePath, ["worktree", "prune"]);
+    } catch {
+      // prune 실패는 무시
     }
   }
 

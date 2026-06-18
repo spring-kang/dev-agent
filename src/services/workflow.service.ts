@@ -4,6 +4,10 @@
  */
 
 import type { EventEmitter } from "node:events";
+import * as os from "node:os";
+import * as path from "node:path";
+import * as crypto from "node:crypto";
+import { mkdir } from "node:fs/promises";
 import type { Orchestrator } from "../orchestrator/orchestrator.js";
 import type { ConfigManager } from "../components/config-manager.js";
 import type { WorkspaceManager } from "../components/workspace-manager.js";
@@ -21,6 +25,15 @@ import { PreflightError, WorkflowServiceError } from "../types/errors.js";
 import type { NotionStatusSync } from "../integrations/notion-status-sync.js";
 import type { NotionArtifactSync } from "../integrations/notion-artifact-sync.js";
 import type { NotionClient } from "../integrations/notion-client.js";
+import {
+  toBatchTaskInput,
+  groupTasksByDomain,
+  runWithConcurrency,
+  summarizeOutcomes,
+  type BatchTaskInput,
+  type BatchTaskOutcome,
+  type BatchBuildSummary,
+} from "./batch-scheduler.js";
 
 const MAX_PARALLEL_WORKFLOWS = 5;
 
@@ -117,6 +130,13 @@ export class WorkflowService {
     options?: {
       projectPath?: string;
       cliOverrides?: Partial<WorkflowConfig>;
+      /**
+       * 이벤트 기반 실시간 Notion Status 동기화 사용 여부 (기본 true).
+       * 배치(병렬) 빌드에서는 여러 워크플로우가 같은 EventEmitter 를 공유하여
+       * phase:start 이벤트의 workflowId↔pageId 매칭이 어긋나므로 false 로 끄고,
+       * 호출 측(executeBuildFromNotionBatch)이 setStatusDirect 로 명시 전이한다.
+       */
+      liveStatusSync?: boolean;
     },
   ): Promise<WorkflowResult> {
     if (!this.notionStatusSync || !this.notionClient) {
@@ -183,13 +203,20 @@ export class WorkflowService {
     const taskDescription = `${task.title}\n\n${inlineSpec}`;
 
     // 5) phase:start 이벤트로 workflowId 캡처 후 Notion sync 시작
+    const liveStatusSync = options?.liveStatusSync !== false;
     let syncStarted = false;
     const statusSync = this.notionStatusSync;
     const artifactSync = this.notionArtifactSync;
     const bus = this.eventEmitter;
     let captureHandler: ((event: import("../types/events.js").PhaseStartEvent) => void) | undefined;
 
-    if (bus) {
+    // 배치 모드(liveStatusSync=false): 이벤트 매칭이 불가하므로 빌드 시작 시점에
+    // "In Progress" 로만 직접 전이한다. 최종 상태는 배치 호출 측이 갱신한다.
+    if (!liveStatusSync) {
+      await statusSync.setStatusDirect(notionPageId, "In Progress");
+    }
+
+    if (bus && liveStatusSync) {
       captureHandler = (event): void => {
         if (syncStarted) return;
         syncStarted = true;
@@ -218,6 +245,214 @@ export class WorkflowService {
       if (syncStarted) {
         statusSync.stop();
         if (artifactSync) artifactSync.stop();
+      }
+    }
+  }
+
+  /**
+   * Notion 의 Approved task 들을 도메인별로 묶어 일괄 빌드한다.
+   *
+   * 스케줄링:
+   *   - task 제목 prefix 로 도메인 식별 (`interview-1` → `interview`)
+   *   - 같은 도메인은 한 레인에서 슬라이스 번호 순으로 **순차** (앞 슬라이스 실패 시
+   *     같은 도메인 후속 슬라이스는 skip)
+   *   - 서로 다른 도메인 레인은 최대 concurrency 개까지 **병렬**
+   *
+   * 격리:
+   *   - 모든 task 가 같은 저장소(basePath)를 공유하므로, 동시 빌드는 각각
+   *     `git worktree` 로 격리된 워킹트리에서 수행한다 (브랜치/인덱스 충돌 방지).
+   *
+   * 상태:
+   *   - 이벤트 기반 live sync 는 동시 실행에서 매칭이 어긋나므로 끄고,
+   *     빌드 시작 시 "In Progress", 종료 시 완료="Done"/실패="Approved" 로 직접 전이.
+   */
+  async executeBuildFromNotionBatch(options: {
+    databaseId: string;
+    basePath?: string;
+    concurrency?: number;
+    cliOverrides?: Partial<WorkflowConfig>;
+    dryRun?: boolean;
+    keepWorktrees?: boolean;
+  }): Promise<BatchBuildSummary> {
+    if (!this.notionStatusSync || !this.notionClient) {
+      throw new WorkflowServiceError(
+        "Notion 통합이 구성되지 않았습니다. integrations.json 에 Notion 인증을 등록하세요.",
+        "recoverable",
+      );
+    }
+    const notionClient = this.notionClient;
+    const statusSync = this.notionStatusSync;
+
+    // 1) Approved task 수집
+    const approved = await notionClient.queryDatabase(options.databaseId, {
+      status: "Approved",
+      pageSize: 100,
+    });
+    const inputs: BatchTaskInput[] = approved
+      .filter((t) => t.title.trim().length > 0)
+      .map((t) => toBatchTaskInput(t));
+
+    const lanes = groupTasksByDomain(inputs);
+
+    if (inputs.length === 0) {
+      return summarizeOutcomes([], lanes, options.dryRun ?? false);
+    }
+
+    // 2) base 저장소 경로 결정 (CLI > Notion 속성)
+    const basePath =
+      options.basePath?.trim() ||
+      inputs.find((t) => t.projectPath.trim().length > 0)?.projectPath.trim();
+    if (!basePath) {
+      throw new WorkflowServiceError(
+        "base 프로젝트 경로를 결정할 수 없습니다. --project 옵션 또는 Notion task 의 'Project Path' 속성을 설정하세요.",
+        "recoverable",
+      );
+    }
+
+    // 3) dry-run: 스케줄만 출력
+    if (options.dryRun) {
+      return summarizeOutcomes([], lanes, true);
+    }
+
+    // 4) base 브랜치 확정 + 사전 fetch (동시 fetch ref-lock 경합 방지)
+    const { value: baseConfig } = await this.configManager.load(
+      basePath,
+      options.cliOverrides,
+    );
+    const baseBranch = baseConfig.baseBranch;
+    await this.gitManager.fetchBase(basePath, baseBranch);
+    const baseRef = await this.gitManager.resolveWorktreeBaseRef(basePath, baseBranch);
+
+    const worktreeRoot = path.join(os.tmpdir(), "devagent-worktrees");
+    await mkdir(worktreeRoot, { recursive: true });
+
+    const concurrency = Math.min(
+      Math.max(1, options.concurrency ?? MAX_PARALLEL_WORKFLOWS),
+      MAX_PARALLEL_WORKFLOWS,
+    );
+
+    this.logger.info(
+      `배치 빌드 시작: ${inputs.length}개 task, ${lanes.length}개 도메인 레인, ` +
+        `동시성=${concurrency}, base=${baseRef}`,
+    );
+
+    // 5) 레인 단위 동시 실행 (레인 내부는 순차, 실패 시 후속 skip)
+    const laneResults = await runWithConcurrency(lanes, concurrency, async (lane) => {
+      const outcomes: BatchTaskOutcome[] = [];
+      let laneFailed = false;
+
+      for (const task of lane.tasks) {
+        if (laneFailed) {
+          this.logger.warn(
+            `[${lane.domain}] 이전 슬라이스 실패로 skip: ${task.title}`,
+          );
+          outcomes.push({
+            pageId: task.pageId,
+            title: task.title,
+            domain: lane.domain,
+            status: "skipped",
+            error: "같은 도메인의 이전 슬라이스 빌드 실패로 건너뜀",
+          });
+          continue;
+        }
+
+        const outcome = await this.buildSingleInWorktree(
+          task,
+          basePath,
+          baseRef,
+          worktreeRoot,
+          statusSync,
+          notionClient,
+          options.cliOverrides,
+          options.keepWorktrees ?? false,
+        );
+        outcomes.push(outcome);
+        if (outcome.status !== "succeeded") {
+          laneFailed = true;
+        }
+      }
+      return outcomes;
+    });
+
+    const allOutcomes = laneResults.flat();
+    return summarizeOutcomes(allOutcomes, lanes, false);
+  }
+
+  /**
+   * 단일 task 를 격리된 worktree 에서 빌드한다 (배치 내부 헬퍼).
+   * 모든 예외를 잡아 outcome 으로 변환하므로 레인 루프를 깨지 않는다.
+   */
+  private async buildSingleInWorktree(
+    task: BatchTaskInput,
+    basePath: string,
+    baseRef: string,
+    worktreeRoot: string,
+    statusSync: NotionStatusSync,
+    notionClient: NotionClient,
+    cliOverrides: Partial<WorkflowConfig> | undefined,
+    keepWorktrees: boolean,
+  ): Promise<BatchTaskOutcome> {
+    const shortId = task.pageId.replace(/-/g, "").slice(0, 8);
+    const rand = crypto.randomBytes(3).toString("hex");
+    const worktreePath = path.join(
+      worktreeRoot,
+      `${task.domain}-${task.slice}-${shortId}-${rand}`,
+    );
+
+    const base: Omit<BatchTaskOutcome, "status"> = {
+      pageId: task.pageId,
+      title: task.title,
+      domain: task.domain,
+    };
+
+    try {
+      await this.gitManager.addDetachedWorktree(basePath, worktreePath, baseRef);
+    } catch (err) {
+      this.logger.error(
+        `[${task.domain}] worktree 생성 실패: ${(err as Error).message}`,
+      );
+      return { ...base, status: "failed", error: `worktree 생성 실패: ${(err as Error).message}` };
+    }
+
+    try {
+      const result = await this.executeBuildFromNotion(task.pageId, {
+        projectPath: worktreePath,
+        ...(cliOverrides ? { cliOverrides } : {}),
+        liveStatusSync: false,
+      });
+
+      const succeeded = result.status === "completed";
+      // 최종 상태 직접 전이 (완료=Done, 실패/중단=Approved 로 재시도 가능하게)
+      await statusSync.setStatusDirect(task.pageId, succeeded ? "Done" : "Approved");
+
+      if (succeeded && result.prUrl) {
+        try {
+          await notionClient.addComment(
+            task.pageId,
+            `✅ dev-agent 배치 빌드 완료\nPR: ${result.prUrl}`,
+          );
+        } catch {
+          // 코멘트 실패는 무시
+        }
+        return { ...base, status: "succeeded", prUrl: result.prUrl };
+      }
+
+      if (succeeded) {
+        return { ...base, status: "succeeded" };
+      }
+
+      return {
+        ...base,
+        status: "failed",
+        error: result.error?.message ?? `워크플로우 상태: ${result.status}`,
+      };
+    } catch (err) {
+      await statusSync.setStatusDirect(task.pageId, "Approved");
+      this.logger.error(`[${task.domain}] 빌드 실패: ${(err as Error).message}`);
+      return { ...base, status: "failed", error: (err as Error).message };
+    } finally {
+      if (!keepWorktrees) {
+        await this.gitManager.removeWorktree(basePath, worktreePath);
       }
     }
   }

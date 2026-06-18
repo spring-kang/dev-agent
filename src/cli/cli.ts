@@ -229,6 +229,22 @@ export class CLI {
         await this.handleBuild(taskValue, options);
       });
 
+    // batch-build — Approved task 일괄 빌드 (도메인 간 병렬 / 같은 도메인 순차, git worktree 격리)
+    this.program
+      .command("batch-build")
+      .description(
+        "Notion DB의 Approved task를 일괄 빌드 (도메인 간 병렬, 같은 도메인 순차, git worktree 격리)",
+      )
+      .option("-p, --project <path>", "base 저장소 경로 (생략 시 Notion 'Project Path' 속성)")
+      .option("--db <id>", "Notion Database ID (생략 시 기본 DB)")
+      .option("-c, --concurrency <number>", "도메인 레인 동시 실행 수", parseInt)
+      .option("-m, --max-iterations <number>", "task당 최대 반복 횟수", parseInt)
+      .option("--dry-run", "실제 빌드 없이 실행 스케줄(레인/순서)만 출력")
+      .option("--keep-worktrees", "빌드 후 임시 worktree를 제거하지 않음 (디버깅용)")
+      .action(async (options: Record<string, unknown>) => {
+        await this.handleBatchBuild(options);
+      });
+
     // notion <subcommand> — integrations notion의 평탄화 alias
     const notionAliasCmd = this.program
       .command("notion")
@@ -357,6 +373,97 @@ export class CLI {
     });
 
     this.printWorkflowResult(result);
+  }
+
+  /**
+   * `devagent batch-build` 핸들러
+   * - Notion DB의 Approved task를 도메인 레인으로 묶어 일괄 빌드
+   * - 도메인 간 병렬 / 같은 도메인 순차 / git worktree 격리
+   */
+  private async handleBatchBuild(options: Record<string, unknown>): Promise<void> {
+    const cfg = this.getNotionConfig();
+    const notion = await cfg.getNotion();
+    if (!notion) {
+      console.log("❌ Notion 인증이 설정되지 않았습니다. 'dev-agent notion login' 실행");
+      process.exitCode = 1;
+      return;
+    }
+
+    const databaseId = (options["db"] as string | undefined) ?? notion.defaultDatabaseId;
+    if (!databaseId) {
+      console.log(
+        "❌ Database ID가 필요합니다. --db <id> 옵션 또는 'notion login --default-db' 사용",
+      );
+      process.exitCode = 1;
+      return;
+    }
+
+    const projectPathOpt = (options["project"] as string | undefined) ?? this.rc.projectPath;
+    const basePath = projectPathOpt ? path.resolve(projectPathOpt) : undefined;
+
+    const cliOverrides: Partial<import("../types/config.js").WorkflowConfig> = {};
+    if (options["maxIterations"]) {
+      cliOverrides.maxIterations = options["maxIterations"] as number;
+    }
+
+    const dryRun = options["dryRun"] === true;
+    const keepWorktrees = options["keepWorktrees"] === true;
+    const concurrency = options["concurrency"] as number | undefined;
+
+    console.log(dryRun ? "배치 빌드 스케줄 미리보기 (dry-run)" : "배치 빌드 시작");
+    const summary = await this.workflowService.executeBuildFromNotionBatch({
+      databaseId,
+      ...(basePath ? { basePath } : {}),
+      ...(concurrency ? { concurrency } : {}),
+      cliOverrides,
+      dryRun,
+      keepWorktrees,
+    });
+
+    this.printBatchSummary(summary);
+  }
+
+  private printBatchSummary(
+    summary: import("../services/batch-scheduler.js").BatchBuildSummary,
+  ): void {
+    console.log("");
+    console.log("실행 스케줄 (도메인 레인):");
+    if (summary.lanes.length === 0) {
+      console.log("  (Approved task 없음)");
+    }
+    for (const lane of summary.lanes) {
+      console.log(`  [${lane.domain}] (순차)`);
+      for (const title of lane.titles) {
+        console.log(`     - ${title}`);
+      }
+    }
+
+    if (summary.dryRun) {
+      console.log("");
+      console.log(`dry-run: 총 ${summary.total}개 task, ${summary.lanes.length}개 도메인 레인`);
+      console.log("  💡 실제 실행하려면 --dry-run 없이 다시 실행하세요");
+      console.log("");
+      return;
+    }
+
+    console.log("");
+    console.log("빌드 결과:");
+    for (const o of summary.outcomes) {
+      const icon =
+        o.status === "succeeded" ? "\u2705" : o.status === "skipped" ? "\u23ED\uFE0F" : "\u274C";
+      const extra = o.prUrl ? ` → ${o.prUrl}` : o.error ? ` (${o.error})` : "";
+      console.log(`  ${icon} [${o.domain}] ${o.title}${extra}`);
+    }
+
+    console.log("");
+    console.log(
+      `요약: 총 ${summary.total} / 성공 ${summary.succeeded} / 실패 ${summary.failed} / 건너뜀 ${summary.skipped}`,
+    );
+    console.log("");
+
+    if (summary.failed > 0) {
+      process.exitCode = 1;
+    }
   }
 
   private async handleStatus(

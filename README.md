@@ -77,6 +77,86 @@ Notion Status 자동 전이 (build 단계만):
 > 기존 `devagent task <id>` (기획부터 PR까지 무중단 자동) 명령은 **제거**되었습니다.
 > 기획(plan)과 구현(build) 사이에는 반드시 사용자의 `Approved` 승인이 필요합니다.
 
+### Stage 2 (일괄) — `devagent batch-build`
+
+여러 도메인을 병렬 기획해 Notion 페이지를 만들고, 한 번에 빌드하고 싶을 때 사용합니다.
+`build`를 task마다 수동 실행하는 대신, DB의 **모든 `Approved` task를 한 번에** 처리합니다.
+
+```bash
+# 먼저 실행 스케줄(레인/순서)만 확인 — 실제 빌드 없음
+devagent batch-build --dry-run
+
+# 실제 일괄 빌드 (도메인 간 병렬, 같은 도메인 순차)
+devagent batch-build --project /path/to/repo --concurrency 3
+```
+
+스케줄링 규칙:
+
+- **task 제목 prefix로 도메인 식별** — `interview-1`, `interview-2`, `learning-1` →
+  `interview` / `learning` 두 레인
+- **같은 도메인(레인)은 슬라이스 번호 오름차순 순차 실행** — 같은 모듈/스키마/파일을 건드리고
+  슬라이스 간 의존이 있으므로 충돌 방지를 위해 직렬화
+- **서로 다른 도메인 레인은 동시(병렬) 실행** — 기본 동시성 5, `--concurrency`로 조절
+- **git worktree 격리** — 각 task는 `origin/<baseBranch>`에서 분리된 임시 worktree
+  (`$TMPDIR/devagent-worktrees/<domain>-<slice>-...`)에서 빌드되어 단일 저장소에서도
+  병렬 빌드가 서로 간섭하지 않음. 완료 후 worktree는 자동 제거(`--keep-worktrees`로 보존)
+- **레인 내 실패 전파** — 한 슬라이스가 실패하면 같은 도메인의 후속 슬라이스는 `skipped`
+  (의존 깨짐 방지). 다른 도메인 레인에는 영향 없음
+
+Notion Status는 task별로 `In Progress → Done`(성공) 또는 `Approved`로 복귀(실패)
+전이되며, 성공 시 PR 링크가 해당 페이지 코멘트로 기록됩니다.
+
+| 옵션 | 설명 |
+|---|---|
+| `-p, --project <path>` | base 저장소 경로 (생략 시 Notion `Project Path` 속성) |
+| `--db <id>` | Notion Database ID (생략 시 기본 DB) |
+| `-c, --concurrency <n>` | 도메인 레인 동시 실행 수 (기본 5, 최대 5) |
+| `-m, --max-iterations <n>` | task당 최대 리뷰 반복 횟수 |
+| `--dry-run` | 실제 빌드 없이 실행 스케줄만 출력 |
+| `--keep-worktrees` | 빌드 후 임시 worktree 보존 (디버깅용) |
+
+#### 다른 PC에서 무인(배치) 실행하기
+
+기획은 메인 PC에서 하고, 빌드는 별도 PC/서버에서 무인으로 돌리는 구성을 권장합니다.
+빌드 PC는 Notion DB만 폴링하면 되므로 **메인 PC와 직접 통신할 필요가 없습니다.**
+
+준비 (빌드 PC 1회):
+
+1. `git`, Node.js 18+, [Claude Code CLI], [Codex CLI] 설치 + 각 CLI 로그인
+2. dev-agent 설치/빌드 (`./setup.sh`)
+3. Notion 인증을 메인 PC와 **동일하게** 등록
+   ```bash
+   devagent notion login --token ntn_xxx --default-db <DB_ID>
+   ```
+4. 대상 저장소를 clone하고 `origin` 푸시 권한 확보(gh auth 등)
+
+무인 루프 예시 (cron / 서비스로 등록):
+
+```bash
+#!/usr/bin/env bash
+# 5분마다 Approved task를 모아 빌드. 빌드 PC의 crontab:
+#   */5 * * * * /path/to/batch-runner.sh >> ~/devagent-batch.log 2>&1
+set -euo pipefail
+cd /path/to/dev_agent
+git -C /path/to/repo fetch origin    # 최신 base 확보
+exec devagent batch-build \
+  --project /path/to/repo \
+  --concurrency 3
+```
+
+동작 원리상 안전한 이유:
+
+- `batch-build`는 매 실행마다 **현재 `Approved`인 task만** 가져와 처리하므로,
+  이미 `Done`이 된 task는 다시 빌드하지 않습니다(중복 방지).
+- 각 빌드는 격리된 worktree에서 이뤄지고 base 저장소의 작업 트리를 건드리지 않습니다.
+- 동시 실행 중복을 막으려면 `flock`으로 단일 인스턴스를 보장하세요:
+  ```bash
+  flock -n /tmp/devagent-batch.lock devagent batch-build --project /path/to/repo || exit 0
+  ```
+
+[Claude Code CLI]: https://docs.claude.com/claude-code
+[Codex CLI]: https://github.com/openai/codex
+
 ## 설치
 
 > 📘 **새 PC에서 처음 설치하는 경우** → [SETUP.md](./SETUP.md) 단계별 가이드 참조
@@ -159,6 +239,7 @@ devagent run \
 | 명령어 | 설명 |
 |---|---|
 | `build <pageId>` | 승인된 Notion task 개발 실행 (Status=Approved 검증 필요) |
+| `batch-build` | Notion DB의 **모든 Approved task 일괄 빌드** (도메인 간 병렬 / 같은 도메인 순차, git worktree 격리) |
 | `run <task>` | 일반 워크플로우 실행 (Notion 비연동, 작업 설명 직접 입력) |
 | `resume <project>` | 중단된 워크플로우 복구 |
 | `status [project]` | 진행 상태 조회 |
