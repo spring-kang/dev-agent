@@ -300,7 +300,7 @@ devagent run \
 {
   "task": "376e8963-3f9d-80bb-ac3e-d8818389de61",
   "projectPath": "/Users/me/projects/foo",
-  "maxIterations": 5,
+  "maxIterations": 10,
   "verbose": true,
   "notion": { "defaultDatabaseId": "<DB_ID>" }
 }

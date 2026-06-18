@@ -36,7 +36,7 @@ export const LOG_LEVEL_PRIORITY: Record<LogLevel, number> = {
 };
 
 export const DEFAULT_CONFIG: Readonly<WorkflowConfig> = {
-  maxIterations: 5,
+  maxIterations: 10,
   branchPrefix: "ai",
   logLevel: "info",
   claudeTimeout: 300_000,
