@@ -126,7 +126,9 @@ ${specContent}
       if (!h) return undefined;
       const end = headings[i + 1]?.idx ?? lines.length;
       const section = lines.slice(h.idx + 1, end).join("\n");
-      const codeBlock = section.match(/```[a-zA-Z0-9_-]*\n([\s\S]*?)```/);
+      // 언어 태그는 줄 끝까지 허용한다. (Notion round-trip 시 빈 코드펜스가
+      // ```plain text``` 처럼 공백 포함 언어 태그로 변환되므로 [a-zA-Z0-9_-]* 로는 매칭 실패)
+      const codeBlock = section.match(/```[^\n]*\n([\s\S]*?)```/);
       if (!codeBlock?.[1]) return undefined;
       const firstLine = codeBlock[1]
         .split("\n")
