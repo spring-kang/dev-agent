@@ -25,6 +25,7 @@ import { PreflightError, WorkflowServiceError } from "../types/errors.js";
 import type { NotionStatusSync } from "../integrations/notion-status-sync.js";
 import type { NotionArtifactSync } from "../integrations/notion-artifact-sync.js";
 import type { NotionClient } from "../integrations/notion-client.js";
+import type { NotionFollowUpService } from "../integrations/notion-follow-up-service.js";
 import {
   toBatchTaskInput,
   groupTasksByDomain,
@@ -57,6 +58,7 @@ export class WorkflowService {
     private readonly notionStatusSync?: NotionStatusSync,
     private readonly notionArtifactSync?: NotionArtifactSync,
     private readonly notionClient?: NotionClient,
+    private readonly notionFollowUpService?: NotionFollowUpService,
   ) {}
 
   /**
@@ -151,6 +153,11 @@ export class WorkflowService {
        * 호출 측(executeBuildFromNotionBatch)이 setStatusDirect 로 명시 전이한다.
        */
       liveStatusSync?: boolean;
+      /**
+       * 반복 소진/정체로 종료 시 후속 작업 티켓 자동 생성 여부 (기본 true).
+       * CLI `--no-follow-up` 으로 false 전달 가능.
+       */
+      createFollowUp?: boolean;
     },
   ): Promise<WorkflowResult> {
     if (!this.notionStatusSync || !this.notionClient) {
@@ -257,6 +264,19 @@ export class WorkflowService {
           suppressProgress: !liveStatusSync,
         },
       );
+
+      // 6) 반복 소진/정체로 종료(=completed + 마지막 리뷰 CHANGES_REQUESTED + 미해결 finding)
+      //    시 남은 작업을 후속 티켓으로 자동 생성. 실패해도 빌드 결과에는 영향 없음.
+      if (this.notionFollowUpService) {
+        await this.notionFollowUpService.createFollowUpIfNeeded({
+          sourcePageId: notionPageId,
+          taskTitle: task.title,
+          projectPath: resolvedProjectPath,
+          result,
+          enabled: options?.createFollowUp !== false,
+        });
+      }
+
       return result;
     } finally {
       if (bus && captureHandler && !syncStarted) {

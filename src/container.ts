@@ -23,6 +23,7 @@ import { NotionClient } from "./integrations/notion-client.js";
 import { NotionStatusSync } from "./integrations/notion-status-sync.js";
 import { NotionBlockAppender } from "./integrations/notion-block-appender.js";
 import { NotionArtifactSync } from "./integrations/notion-artifact-sync.js";
+import { NotionFollowUpService } from "./integrations/notion-follow-up-service.js";
 
 export interface Container {
   cli: CLI;
@@ -49,6 +50,7 @@ interface IntegrationServices {
   notionClient?: NotionClient;
   notionStatusSync?: NotionStatusSync;
   notionArtifactSync?: NotionArtifactSync;
+  notionFollowUpService?: NotionFollowUpService;
 }
 
 /**
@@ -79,12 +81,18 @@ async function assembleIntegrations(
       eventEmitter,
       logger,
     );
+    const notionFollowUpService = new NotionFollowUpService(
+      notionClient,
+      notionBlockAppender,
+      logger,
+    );
 
     return {
       notionConfig,
       notionClient,
       notionStatusSync,
       notionArtifactSync,
+      notionFollowUpService,
     };
   } catch (error) {
     logger.warn(`Notion 통합 조립 실패: ${(error as Error).message}`);
@@ -118,6 +126,7 @@ export async function createContainerAsync(): Promise<Container> {
     integrations.notionStatusSync,
     integrations.notionArtifactSync,
     integrations.notionClient,
+    integrations.notionFollowUpService,
   );
 
   const cli = new CLI(
@@ -150,6 +159,7 @@ export async function createWebContainer(): Promise<WebContainer> {
     integrations.notionStatusSync,
     integrations.notionArtifactSync,
     integrations.notionClient,
+    integrations.notionFollowUpService,
   );
 
   const cli = new CLI(

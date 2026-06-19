@@ -238,6 +238,111 @@ export class NotionClient {
     });
   }
 
+  // ── 페이지 생성 (후속 작업 티켓 등) ──
+
+  /**
+   * DB row 페이지의 부모 데이터베이스 ID 조회.
+   * DB에 속한 페이지는 parent.database_id 를 가진다. 그 외(워크스페이스/페이지 자식)
+   * 거나 접근 불가(404)면 null.
+   */
+  async getParentDatabaseId(pageId: string): Promise<string | null> {
+    const id = this.normalizeId(pageId);
+    try {
+      const page = await this.request<NotionPageObject>(`/pages/${id}`);
+      if (page.parent?.type === "database_id" && page.parent.database_id) {
+        return page.parent.database_id;
+      }
+      return null;
+    } catch (err) {
+      if (err instanceof NotionApiError && err.status === 404) return null;
+      throw err;
+    }
+  }
+
+  /**
+   * DB에 새 row(페이지) 생성. 후속 작업 티켓 자동 생성 등에 사용.
+   * - title 은 DB의 title 타입 속성에 기록 (스키마에서 자동 탐지)
+   * - status / projectPath 는 DB 속성 타입(status|select, rich_text|url)에 맞춰 기록
+   * - 스키마 조회 실패 시 propertyMapping 기본값과 가장 일반적인 타입으로 폴백
+   */
+  async createPage(input: {
+    databaseId: string;
+    title: string;
+    status?: string;
+    projectPath?: string;
+  }): Promise<{ id: string; url: string }> {
+    const databaseId = this.normalizeId(input.databaseId);
+    const schema = await this.getDatabasePropertyTypes(databaseId).catch((err) => {
+      this.logger.warn(`Notion DB 스키마 조회 실패 (${databaseId}): ${(err as Error).message}`);
+      return {} as Record<string, string>;
+    });
+
+    const properties: Record<string, unknown> = {};
+
+    // title (필수): 스키마에서 title 타입 속성명을 우선 사용
+    const titleProp = this.findTitlePropName(schema);
+    properties[titleProp] = {
+      title: [{ type: "text", text: { content: input.title } }],
+    };
+
+    // status (선택): status 타입 우선, select면 select로
+    if (input.status) {
+      const statusProp = this.propertyMapping.status;
+      const statusType = schema[statusProp];
+      if (statusType === "select") {
+        properties[statusProp] = { select: { name: input.status } };
+      } else {
+        properties[statusProp] = { status: { name: input.status } };
+      }
+    }
+
+    // projectPath (선택): url 타입이면 url, 그 외 rich_text
+    if (input.projectPath) {
+      const ppProp = this.propertyMapping.projectPath;
+      const ppType = schema[ppProp];
+      if (ppType === "url") {
+        properties[ppProp] = { url: input.projectPath };
+      } else if (ppType === undefined || ppType === "rich_text") {
+        properties[ppProp] = {
+          rich_text: [{ type: "text", text: { content: input.projectPath } }],
+        };
+      }
+    }
+
+    const page = await this.request<NotionPageObject>("/pages", {
+      method: "POST",
+      body: JSON.stringify({
+        parent: { database_id: databaseId },
+        properties,
+      }),
+    });
+    return { id: page.id, url: page.url ?? "" };
+  }
+
+  /**
+   * DB의 속성명 → 타입 맵을 조회한다 (페이지 생성 시 타입 매칭용).
+   */
+  private async getDatabasePropertyTypes(databaseId: string): Promise<Record<string, string>> {
+    const db = await this.request<{ properties?: Record<string, { type?: string }> }>(
+      `/databases/${this.normalizeId(databaseId)}`,
+    );
+    const out: Record<string, string> = {};
+    for (const [name, prop] of Object.entries(db.properties ?? {})) {
+      if (prop?.type) out[name] = prop.type;
+    }
+    return out;
+  }
+
+  /**
+   * 스키마에서 title 타입 속성명을 찾는다. 없으면 propertyMapping.title 폴백.
+   */
+  private findTitlePropName(schema: Record<string, string>): string {
+    for (const [name, type] of Object.entries(schema)) {
+      if (type === "title") return name;
+    }
+    return this.propertyMapping.title;
+  }
+
   /**
    * 페이지에 달린 (미해결 포함) 댓글을 시간순으로 조회.
    *
@@ -574,6 +679,11 @@ interface NotionPageObject {
   url?: string;
   last_edited_time?: string;
   properties?: Record<string, NotionProperty>;
+  parent?: {
+    type?: string;
+    database_id?: string;
+    page_id?: string;
+  };
 }
 
 interface NotionProperty {

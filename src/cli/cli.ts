@@ -219,6 +219,10 @@ export class CLI {
       .argument("[pageIdOrUrl]", "Notion page ID 또는 URL")
       .option("-p, --project <path>", "프로젝트 경로 (생략 시 rc 또는 Notion 속성)")
       .option("-m, --max-iterations <number>", "최대 반복 횟수", parseInt)
+      .option(
+        "--no-follow-up",
+        "반복 소진/정체로 종료 시 후속 작업 Notion 티켓 자동 생성 비활성화",
+      )
       .action(async (pageIdOrUrl: string | undefined, options: Record<string, unknown>) => {
         const taskValue = pageIdOrUrl ?? this.rc.task;
         if (!taskValue) {
@@ -377,10 +381,14 @@ export class CLI {
       cliOverrides.maxIterations = options["maxIterations"] as number;
     }
 
+    // commander: `--no-follow-up` 지정 시 options.followUp === false (미지정 시 true)
+    const createFollowUp = options["followUp"] !== false;
+
     console.log(`Notion task 개발 시작: ${pageIdOrUrl}`);
     const result = await this.workflowService.executeBuildFromNotion(pageIdOrUrl, {
       ...(projectPath ? { projectPath } : {}),
       cliOverrides,
+      createFollowUp,
     });
 
     this.printWorkflowResult(result);
