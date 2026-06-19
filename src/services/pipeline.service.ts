@@ -82,6 +82,13 @@ export class PipelineService {
     const changedFiles = implResult.changedFiles;
     updatedArtifacts.changedFiles = changedFiles;
 
+    if (changedFiles.length === 0) {
+      this.logger.warn(
+        "Codex가 이번 사이클에서 변경한 파일이 없습니다 (무변경). " +
+          "동일 입력으로 리뷰가 반복되면 정체(stall)로 감지되어 조기 중단될 수 있습니다.",
+      );
+    }
+
     state.currentPhase = "implementation";
     state.artifacts = updatedArtifacts;
     await this.stateManager.save(state);

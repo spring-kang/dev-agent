@@ -22,6 +22,7 @@ import type {
 } from "../types/workflow.js";
 import { WORKFLOW_DIRS } from "../types/workflow.js";
 import { DEFAULT_CONFIG } from "../types/config.js";
+import { StallDetector } from "./stall-detector.js";
 import type { ReviewHistoryEntry } from "../types/git.js";
 import {
   OrchestratorError,
@@ -226,6 +227,7 @@ export class Orchestrator {
       ? state.reviewHistory[state.reviewHistory.length - 1]
       : undefined;
     let reworkScope: "partial" | "full" | undefined;
+    const stallDetector = new StallDetector();
 
     while (cycleNumber <= request.config.maxIterations) {
       state.currentCycle = cycleNumber;
@@ -294,6 +296,27 @@ export class Orchestrator {
       // CHANGES_REQUESTED → 다음 사이클 준비
       previousFeedback = cycleResult.reviewResult;
       reworkScope = cycleResult.reviewResult.recommendation;
+
+      // 무진척(정체) 감지: Codex 무변경 또는 직전과 동일 피드백이 연속되면
+      // maxIterations 까지 의미 없이 소모하지 않고 사용자에게 조기 결정을 위임한다.
+      const stalled = stallDetector.record(
+        cycleResult.changedFiles.length,
+        cycleResult.reviewResult,
+      );
+      if (stalled) {
+        const stallResult = await this.handleStallDetected(
+          request,
+          state,
+          start,
+          stallDetector.count,
+        );
+        if (stallResult) {
+          return stallResult;
+        }
+        // 사용자가 '계속 진행'을 선택 → 정체 카운터 리셋 후 루프 지속
+        stallDetector.reset();
+      }
+
       cycleNumber++;
     }
 
@@ -313,46 +336,14 @@ export class Orchestrator {
       `최대 반복 횟수(${request.config.maxIterations}회)에 도달했습니다.`,
     );
 
-    const decision = await this.promptUserDecision(request.config.maxIterations, state.currentCycle);
+    const decision = await this.promptUserDecision([
+      `\u26A0\uFE0F  최대 반복 횟수(${request.config.maxIterations}회)에 도달했습니다.`,
+      `현재까지 ${state.currentCycle}회 사이클 수행, 마지막 리뷰: CHANGES_REQUESTED`,
+    ]);
 
     switch (decision) {
-      case "create_pr": {
-        // 미통과 상태로 PR 생성
-        state.currentPhase = "pr_creation";
-        await this.stateManager.save(state);
-
-        const context = this.buildFinalizeContext(state);
-        const finalizeResult = await this.gitService.finalize(
-          request.projectPath,
-          state.branchName,
-          request.config.baseBranch,
-          context,
-          request.config.prIncludeReviewSummary,
-        );
-
-        state.status = "completed";
-        state.currentPhase = "completed";
-        state.completedAt = new Date().toISOString();
-        await this.stateManager.save(state);
-        await this.stateManager.archive(request.projectPath, state.workflowId);
-
-        if (finalizeResult.skipped) {
-          this.logger.info(
-            `최대 반복 도달 후 로컬 완료 (push/PR 스킵 사유=${finalizeResult.skipReason}). ` +
-              `브랜치: ${state.branchName}`,
-          );
-        }
-
-        return {
-          status: "completed",
-          prUrl: finalizeResult.prUrl ?? undefined,
-          totalCycles: state.currentCycle,
-          reviewHistory: state.reviewHistory,
-          duration: Math.round(performance.now() - startTime),
-          workflowId: state.workflowId,
-          branchName: state.branchName,
-        };
-      }
+      case "create_pr":
+        return this.finalizeAndComplete(request, state, startTime, "최대 반복 도달");
 
       case "continue": {
         // 추가 반복 (기본 3회)
@@ -364,40 +355,135 @@ export class Orchestrator {
       }
 
       case "stop":
-      default: {
-        state.status = "stopped";
-        state.currentPhase = "stopped";
-        await this.stateManager.save(state);
-
-        return {
-          status: "stopped",
-          totalCycles: state.currentCycle,
-          reviewHistory: state.reviewHistory,
-          duration: Math.round(performance.now() - startTime),
-          workflowId: state.workflowId,
-          branchName: state.branchName,
-        };
-      }
+      default:
+        return this.stopWorkflow(state, startTime);
     }
   }
 
+  /**
+   * 무진척(정체) 감지 처리 (사용자 선택)
+   * @returns 사용자가 'PR 생성' 또는 '중단'을 선택하면 종료 결과, '계속 진행'을 선택하면 null
+   */
+  private async handleStallDetected(
+    request: WorkflowRequest,
+    state: WorkflowState,
+    startTime: number,
+    noProgressCount: number,
+  ): Promise<WorkflowResult | null> {
+    this.logger.warn(
+      `무진척 사이클이 ${noProgressCount}회 연속 감지되었습니다 ` +
+        `(Codex 무변경 또는 직전과 동일한 리뷰 피드백). ` +
+        `동일 결과가 반복될 가능성이 높아 조기 결정을 제안합니다.`,
+    );
+
+    const decision = await this.promptUserDecision([
+      `\u26A0\uFE0F  진척 없는 사이클이 ${noProgressCount}회 연속 감지되었습니다.`,
+      "Codex가 변경을 만들지 못했거나 직전과 동일한 리뷰 피드백이 반복되고 있습니다.",
+      `현재까지 ${state.currentCycle}회 사이클 수행, 마지막 리뷰: CHANGES_REQUESTED`,
+    ], { continueLabel: "정체 무시하고 계속 진행" });
+
+    switch (decision) {
+      case "create_pr":
+        return this.finalizeAndComplete(request, state, startTime, "정체 감지");
+
+      case "continue":
+        // 루프 계속 진행 (호출부에서 정체 카운터 리셋)
+        return null;
+
+      case "stop":
+      default:
+        return this.stopWorkflow(state, startTime);
+    }
+  }
+
+  /**
+   * 미통과 상태로 PR 생성 후 워크플로우 완료 처리
+   */
+  private async finalizeAndComplete(
+    request: WorkflowRequest,
+    state: WorkflowState,
+    startTime: number,
+    reasonLabel: string,
+  ): Promise<WorkflowResult> {
+    state.currentPhase = "pr_creation";
+    await this.stateManager.save(state);
+
+    const context = this.buildFinalizeContext(state);
+    const finalizeResult = await this.gitService.finalize(
+      request.projectPath,
+      state.branchName,
+      request.config.baseBranch,
+      context,
+      request.config.prIncludeReviewSummary,
+    );
+
+    state.status = "completed";
+    state.currentPhase = "completed";
+    state.completedAt = new Date().toISOString();
+    await this.stateManager.save(state);
+    await this.stateManager.archive(request.projectPath, state.workflowId);
+
+    if (finalizeResult.skipped) {
+      this.logger.info(
+        `${reasonLabel} 후 로컬 완료 (push/PR 스킵 사유=${finalizeResult.skipReason}). ` +
+          `브랜치: ${state.branchName}`,
+      );
+    } else {
+      this.logger.info(`${reasonLabel} 후 PR 생성: ${finalizeResult.prUrl}`);
+    }
+
+    return {
+      status: "completed",
+      prUrl: finalizeResult.prUrl ?? undefined,
+      totalCycles: state.currentCycle,
+      reviewHistory: state.reviewHistory,
+      duration: Math.round(performance.now() - startTime),
+      workflowId: state.workflowId,
+      branchName: state.branchName,
+    };
+  }
+
+  /**
+   * 워크플로우 중단 처리
+   */
+  private async stopWorkflow(
+    state: WorkflowState,
+    startTime: number,
+  ): Promise<WorkflowResult> {
+    state.status = "stopped";
+    state.currentPhase = "stopped";
+    await this.stateManager.save(state);
+
+    return {
+      status: "stopped",
+      totalCycles: state.currentCycle,
+      reviewHistory: state.reviewHistory,
+      duration: Math.round(performance.now() - startTime),
+      workflowId: state.workflowId,
+      branchName: state.branchName,
+    };
+  }
+
   private async promptUserDecision(
-    maxIterations: number,
-    currentCycle: number,
+    headerLines: string[],
+    options?: { continueLabel?: string },
   ): Promise<MaxIterationDecision> {
     const rl = readline.createInterface({
       input: process.stdin,
       output: process.stdout,
     });
 
+    const continueLabel = options?.continueLabel ?? "추가 반복 (3회)";
+
     return new Promise((resolve) => {
       console.log("");
-      console.log(`\u26A0\uFE0F  최대 반복 횟수(${maxIterations}회)에 도달했습니다.`);
-      console.log(`현재까지 ${currentCycle}회 사이클 수행, 마지막 리뷰: CHANGES_REQUESTED`);
+      for (const line of headerLines) {
+        console.log(line);
+      }
       console.log("");
       console.log("선택해주세요:");
       console.log("  1) 현재 상태로 PR 생성");
-      console.log("  2) 추가 반복 (3회)");
+      console.log(`  2) ${continueLabel}`);
       console.log("  3) 워크플로우 중단");
       console.log("");
 
