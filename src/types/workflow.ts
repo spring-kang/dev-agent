@@ -72,6 +72,8 @@ export interface WorkflowState {
   projectPath: string;
   projectName: string;
   taskDescription: string;
+  /** inlineSpec 출처 라벨 (예: notion:<pageId>) - resume 후 외부 후처리 복구용 */
+  inlineSpecSource?: string;
   status: "running" | "completed" | "failed" | "stopped";
   currentPhase: WorkflowPhase;
   currentCycle: number;

@@ -64,6 +64,7 @@ export class Orchestrator {
       projectPath: request.projectPath,
       projectName: request.projectPath.split("/").pop() ?? "unknown",
       taskDescription: request.taskDescription,
+      ...(request.inlineSpecSource ? { inlineSpecSource: request.inlineSpecSource } : {}),
       status: "running",
       currentPhase: "initializing",
       currentCycle: 0,
@@ -158,6 +159,7 @@ export class Orchestrator {
         ...DEFAULT_CONFIG,
         maxIterations: state.maxIterations,
       },
+      ...(state.inlineSpecSource ? { inlineSpecSource: state.inlineSpecSource } : {}),
     };
 
     return this.runCycleLoop(request, state);

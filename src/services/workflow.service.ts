@@ -542,10 +542,58 @@ export class WorkflowService {
       throw new WorkflowServiceError("이미 완료된 워크플로우입니다", "recoverable");
     }
 
+    const notionPageId = state.inlineSpecSource?.startsWith("notion:")
+      ? state.inlineSpecSource.slice("notion:".length)
+      : undefined;
+
     this.monitoringService.start(state.workflowId, projectPath, state.taskDescription);
 
     try {
       const result = await this.orchestrator.resume(projectPath);
+
+      if (notionPageId && this.notionStatusSync) {
+        try {
+          await this.notionStatusSync.setStatusDirect(
+            notionPageId,
+            result.status === "completed" ? "Done" : "Approved",
+          );
+        } catch (error) {
+          this.logger.warn(
+            `resume 후 Notion 상태 동기화 실패 (page=${notionPageId}): ${(error as Error).message}`,
+          );
+        }
+      }
+
+      if (notionPageId && this.notionClient && result.status === "completed" && result.prUrl) {
+        try {
+          await this.notionClient.addComment(
+            notionPageId,
+            `✅ dev-agent 작업 완료\nPR: ${result.prUrl}`,
+          );
+        } catch (error) {
+          this.logger.warn(
+            `resume 후 Notion 코멘트 추가 실패 (page=${notionPageId}): ${(error as Error).message}`,
+          );
+        }
+      }
+
+      if (notionPageId && this.notionFollowUpService) {
+        try {
+          const title = state.taskDescription.split('\n')[0] ?? state.taskDescription;
+          await this.notionFollowUpService.createFollowUpIfNeeded({
+            sourcePageId: notionPageId,
+            taskTitle: title,
+            projectPath,
+            result,
+            enabled: true,
+          });
+        } catch (error) {
+          this.logger.warn(
+            `resume 후 Notion 후속 티켓 처리 실패 (page=${notionPageId}): ${(error as Error).message}`,
+          );
+        }
+      }
+
       this.monitoringService.stop();
       return result;
     } catch (error) {
