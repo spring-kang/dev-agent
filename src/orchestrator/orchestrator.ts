@@ -468,12 +468,29 @@ export class Orchestrator {
     headerLines: string[],
     options?: { continueLabel?: string },
   ): Promise<MaxIterationDecision> {
+    const continueLabel = options?.continueLabel ?? "추가 반복 (3회)";
+
+    const envDecision = process.env.DEVAGENT_NON_INTERACTIVE_DECISION?.trim();
+    const isNonInteractive = !process.stdin.isTTY || !process.stdout.isTTY || process.env.CI === "1";
+    const forcedDecision = envDecision === "create_pr" || envDecision === "continue" || envDecision === "stop"
+      ? envDecision
+      : undefined;
+
+    if (isNonInteractive) {
+      const autoDecision: MaxIterationDecision = forcedDecision ?? "create_pr";
+      this.logger.warn(
+        `비대화형 실행 감지: 사용자 입력 대신 자동 결정(${autoDecision})을 적용합니다.`,
+      );
+      for (const line of headerLines) {
+        this.logger.warn(line);
+      }
+      return autoDecision;
+    }
+
     const rl = readline.createInterface({
       input: process.stdin,
       output: process.stdout,
     });
-
-    const continueLabel = options?.continueLabel ?? "추가 반복 (3회)";
 
     return new Promise((resolve) => {
       console.log("");
