@@ -24,7 +24,7 @@ const SIGTERM_GRACE_PERIOD = 5000;
 export class CodexAgent implements ImplementationAgent {
   constructor(
     private readonly logger: Logger,
-    private readonly timeout: number = 600_000,
+    private readonly timeout: number = 1_200_000,
   ) {}
 
   /**
