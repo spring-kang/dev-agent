@@ -62,7 +62,7 @@ export const DEFAULT_CONFIG: Readonly<WorkflowConfig> = {
   branchPrefix: "ai",
   logLevel: "info",
   claudeTimeout: 300_000,
-  codexTimeout: 600_000,
+  codexTimeout: 1_200_000,
   prIncludeReviewSummary: true,
   autoCommit: true,
   // 기획은 사용자가 직접 claude로 진행 → 리뷰는 비용/품질 균형이 좋은 Sonnet으로 고정 기본값.
