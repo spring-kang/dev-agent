@@ -23,6 +23,14 @@ export interface GitInitResult {
   branchName: string;
   hadDirtyState: boolean;
   dirtyFiles?: DirtyStateInfo;
+  continuedFromPrUrl?: string;
+}
+
+export interface PullRequestInfo {
+  url: string;
+  state: string;
+  headRefName: string;
+  baseRefName: string;
 }
 
 export interface FinalizeContext {

@@ -41,11 +41,29 @@ export class GitService {
       this.logger.warn(`작업 중인 변경사항이 감지되었습니다: ${preview}${suffix}`);
     }
 
-    // 2. base 브랜치 동기화 (origin fetch/checkout/pull --ff-only)
+    // 2. 후속 작업이 기존 미머지 PR을 이어받아야 하는지 확인
+    const existingFollowUpPrUrl = this.extractFollowUpPrUrl(taskDescription);
+    if (existingFollowUpPrUrl) {
+      const prInfo = await this.gitManager.getPullRequestInfo(projectPath, existingFollowUpPrUrl);
+      if (prInfo?.state === "OPEN") {
+        await this.gitManager.checkoutRemoteBranch(projectPath, prInfo.headRefName);
+        this.logger.info(
+          `후속 작업: 기존 OPEN PR 브랜치에 이어서 작업합니다 (${prInfo.headRefName})`,
+        );
+        return {
+          branchName: prInfo.headRefName,
+          hadDirtyState: dirtyState.isDirty,
+          dirtyFiles: dirtyState.isDirty ? dirtyState : undefined,
+          continuedFromPrUrl: prInfo.url,
+        };
+      }
+    }
+
+    // 3. base 브랜치 동기화 (origin fetch/checkout/pull --ff-only)
     //    브랜치 생성 전에 항상 최신 base에서 분기하도록 보장한다.
     await this.gitManager.syncBaseBranch(projectPath, baseBranch);
 
-    // 3. 브랜치 생성
+    // 4. 브랜치 생성
     const branchName = await this.gitManager.createBranch(
       projectPath,
       taskDescription,
@@ -105,6 +123,15 @@ export class GitService {
     });
 
     return { prUrl, branchName };
+  }
+
+  /**
+   * 후속 작업 티켓 본문에 기록된 원본 PR URL을 추출한다.
+   * 형식 예: `- 생성된 PR: https://github.com/org/repo/pull/123`
+   */
+  private extractFollowUpPrUrl(taskDescription: string): string | undefined {
+    const match = taskDescription.match(/생성된 PR:\s*(https:\/\/github\.com\/[^\s)]+)/);
+    return match?.[1];
   }
 
   /**

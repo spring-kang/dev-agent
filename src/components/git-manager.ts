@@ -5,7 +5,7 @@
 
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import type { PrRequest, DirtyStateInfo, ExecResult } from "../types/git.js";
+import type { PrRequest, DirtyStateInfo, ExecResult, PullRequestInfo } from "../types/git.js";
 import {
   MAX_SLUG_LENGTH,
   MIN_SLUG_LENGTH,
@@ -113,6 +113,35 @@ export class GitManager {
     this.logger.info(`브랜치 생성: ${branchName}`);
 
     return branchName;
+  }
+
+  /**
+   * 원격 브랜치를 현재 worktree에 체크아웃해 기존 PR 위에 이어서 작업한다.
+   */
+  async checkoutRemoteBranch(projectPath: string, branchName: string): Promise<void> {
+    await this.execGit(projectPath, ["fetch", "origin", branchName], GIT_NETWORK_TIMEOUT);
+    await this.execGit(projectPath, ["checkout", "-B", branchName, `origin/${branchName}`]);
+    this.logger.info(`기존 원격 브랜치 체크아웃: ${branchName}`);
+  }
+
+  /**
+   * PR URL로 GitHub PR 정보를 조회한다.
+   */
+  async getPullRequestInfo(projectPath: string, prUrl: string): Promise<PullRequestInfo | null> {
+    try {
+      const result = await this.execGh(projectPath, [
+        "pr",
+        "view",
+        prUrl,
+        "--json",
+        "url,state,headRefName,baseRefName",
+      ]);
+      const parsed = JSON.parse(result.stdout) as PullRequestInfo;
+      return parsed;
+    } catch (error) {
+      this.logger.warn(`PR 정보 조회 실패 (${prUrl}): ${(error as Error).message}`);
+      return null;
+    }
   }
 
   /**
