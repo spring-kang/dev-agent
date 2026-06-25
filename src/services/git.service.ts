@@ -160,6 +160,22 @@ export class GitService {
       sections.push("");
     }
 
+    // E2E 검증 결과 (게이트가 동작한 경우에만)
+    if (context.e2e) {
+      const e = context.e2e;
+      const statusLabel = e.passed
+        ? "\u2705 통과"
+        : e.timedOut
+          ? "\u23F1\uFE0F 타임아웃"
+          : "\u274C 실패";
+      sections.push("## E2E 검증");
+      sections.push(`- 결과: ${statusLabel}`);
+      sections.push(`- 대상: ${e.url || "(미지정)"}`);
+      sections.push(`- 명령: \`${e.command}\``);
+      sections.push(`- 소요 시간: ${e.durationMs}ms`);
+      sections.push("");
+    }
+
     // 리뷰 히스토리
     if (includeReviewSummary && context.reviewHistory.length > 0) {
       sections.push("## 리뷰 히스토리");

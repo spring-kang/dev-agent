@@ -389,6 +389,16 @@ export class Orchestrator {
         timeout: request.config.e2eTimeout,
       });
 
+      // PR 본문 표기를 위해 통과/실패 무관하게 마지막 실행 요약을 상태에 보관한다.
+      state.e2e = {
+        passed: result.passed,
+        durationMs: result.duration,
+        command: request.config.e2eCommand,
+        url,
+        exitCode: result.exitCode,
+        timedOut: result.timedOut,
+      };
+
       this.safeEmit("e2e:complete", {
         type: "e2e:complete",
         workflowId: state.workflowId,
@@ -404,6 +414,14 @@ export class Orchestrator {
       // 실행 자체 실패(명령 미존재 등) → 게이트 실패로 처리(PR 보류).
       const message = error instanceof Error ? error.message : String(error);
       this.logger.warn(`E2E 검증 실행 오류: ${message}`);
+      state.e2e = {
+        passed: false,
+        durationMs: 0,
+        command: request.config.e2eCommand,
+        url,
+        exitCode: null,
+        timedOut: false,
+      };
       this.safeEmit("e2e:complete", {
         type: "e2e:complete",
         workflowId: state.workflowId,
@@ -637,6 +655,7 @@ export class Orchestrator {
       })),
       totalCycles: state.currentCycle,
       changedFiles: state.artifacts.changedFiles ?? [],
+      ...(state.e2e ? { e2e: state.e2e } : {}),
     };
   }
 

@@ -5,6 +5,7 @@
 import type { WorkflowConfig } from "./config.js";
 import type { ReviewResult } from "./review.js";
 import type { AppError } from "./errors.js";
+import type { E2eSummary } from "./e2e.js";
 
 // ── 워크플로우 단계 ──
 
@@ -89,6 +90,8 @@ export interface WorkflowState {
   planningCompleted?: boolean;
   /** Build 진입 시각 (감사용, ISO 8601) */
   planApprovedAt?: string;
+  /** 마지막 E2E 게이트 실행 요약 (PR 본문 표기용). e2eEnabled=true 일 때만 채워짐 */
+  e2e?: E2eSummary;
 }
 
 // ── 워크플로우 요청/결과 ──

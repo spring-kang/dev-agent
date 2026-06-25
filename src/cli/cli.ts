@@ -11,6 +11,8 @@ import type { WorkspaceManager } from "../components/workspace-manager.js";
 import type { Logger } from "../components/logger.js";
 import type { NotionConfigManager } from "../integrations/notion-config.js";
 import type { NotionClient } from "../integrations/notion-client.js";
+import { E2eVerifier } from "../components/e2e-verifier.js";
+import type { E2eResult } from "../types/e2e.js";
 import { formatError } from "./formatters/error-formatter.js";
 import { formatReportText } from "./formatters/report-formatter.js";
 import { loadRC, applyRCToRunOptions, type DevAgentRC } from "./rc-loader.js";
@@ -255,6 +257,18 @@ export class CLI {
         await this.handleBatchBuild(options);
       });
 
+    // e2e <url> — 빌드 없이 임의 URL 대상으로 E2E(Playwright) 검증만 단독 실행 (CI 사용 가능)
+    this.program
+      .command("e2e")
+      .description("임의 URL 대상으로 E2E(Playwright) 검증 단독 실행 (빌드 없이, 실패 시 exit 1)")
+      .argument("<url>", "검증 대상 base URL (예: http://localhost:3000)")
+      .option("-c, --command <cmd>", "E2E 실행 명령 (생략 시 설정값 또는 'npx playwright test')")
+      .option("-p, --project <path>", "테스트 실행 경로(cwd) (생략 시 rc 또는 현재 디렉토리)")
+      .option("-t, --timeout <ms>", "타임아웃(ms)", parseInt)
+      .action(async (url: string, options: Record<string, unknown>) => {
+        await this.handleE2e(url, options);
+      });
+
     // notion <subcommand> — integrations notion의 평탄화 alias
     const notionAliasCmd = this.program
       .command("notion")
@@ -455,6 +469,77 @@ export class CLI {
     });
 
     this.printBatchSummary(summary);
+  }
+
+  /**
+   * `devagent e2e <url>` 핸들러
+   * - 빌드 파이프라인과 무관하게 임의 URL 대상으로 E2E 검증만 단독 실행한다.
+   * - e2eCommand/e2eTimeout 기본값은 설정 4-source 병합으로 해석(CLI 옵션 우선).
+   * - 실패/실행오류 시 process.exitCode=1 → CI 게이트로 사용 가능.
+   */
+  private async handleE2e(url: string, options: Record<string, unknown>): Promise<void> {
+    const projectPathOpt = (options["project"] as string | undefined) ?? this.rc.projectPath;
+    const projectPath = projectPathOpt ? path.resolve(projectPathOpt) : process.cwd();
+
+    // CLI 옵션을 override 로 얹어 설정에서 e2eCommand/e2eTimeout 기본값을 해석한다.
+    const cliOverrides: Partial<import("../types/config.js").WorkflowConfig> = {
+      e2eEnabled: true,
+      e2eUrl: url,
+    };
+    if (options["command"]) cliOverrides.e2eCommand = options["command"] as string;
+    if (options["timeout"]) cliOverrides.e2eTimeout = options["timeout"] as number;
+
+    const config = await this.configManager.load(projectPath, cliOverrides);
+    const command = config.value.e2eCommand;
+    const timeout = config.value.e2eTimeout;
+
+    console.log("\nE2E 검증 실행");
+    console.log(`  URL:      ${url}`);
+    console.log(`  명령:     ${command}`);
+    console.log(`  경로:     ${projectPath}`);
+    console.log(`  타임아웃: ${timeout}ms\n`);
+
+    const verifier = new E2eVerifier(this.logger);
+    try {
+      const result = await verifier.verify({ projectPath, url, command, timeout });
+      this.printE2eResult(result);
+      if (!result.passed) {
+        process.exitCode = 1;
+      }
+    } catch (error) {
+      console.log(`\u274C E2E 실행 오류: ${(error as Error).message}`);
+      console.log(
+        "  e2eCommand/대상 URL 및 테스트 러너(예: playwright) 설치 상태를 확인하세요.",
+      );
+      process.exitCode = 1;
+    }
+  }
+
+  /**
+   * E2E 단독 실행 결과를 콘솔에 표 형태로 출력한다.
+   */
+  private printE2eResult(result: E2eResult): void {
+    const status = result.passed
+      ? "\u2705 통과"
+      : result.timedOut
+        ? "\u23F1\uFE0F 타임아웃"
+        : "\u274C 실패";
+    const divider = "\u2500".repeat(40);
+    console.log(divider);
+    console.log(`  결과:      ${status}`);
+    console.log(`  종료 코드: ${result.exitCode ?? "null"}`);
+    console.log(`  소요 시간: ${result.duration}ms`);
+    console.log(divider);
+
+    if (!result.passed) {
+      const tail = (s: string): string => (s.length > 2000 ? s.slice(-2000) : s);
+      if (result.stdout.trim().length > 0) {
+        console.log(`\n[stdout]\n${tail(result.stdout)}`);
+      }
+      if (result.stderr.trim().length > 0) {
+        console.log(`\n[stderr]\n${tail(result.stderr)}`);
+      }
+    }
   }
 
   private printBatchSummary(

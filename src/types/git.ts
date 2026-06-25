@@ -3,6 +3,7 @@
  */
 
 import type { ReviewResult } from "./review.js";
+import type { E2eSummary } from "./e2e.js";
 
 export interface PrRequest {
   projectPath: string;
@@ -29,6 +30,8 @@ export interface FinalizeContext {
   reviewHistory: ReviewHistoryEntry[];
   totalCycles: number;
   changedFiles: string[];
+  /** E2E 게이트 실행 요약 (e2eEnabled=true 로 게이트가 동작한 경우에만 존재). */
+  e2e?: E2eSummary;
 }
 
 export interface ReviewHistoryEntry {

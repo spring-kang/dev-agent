@@ -34,3 +34,21 @@ export interface ParsedCommand {
   file: string;
   args: string[];
 }
+
+/**
+ * E2E 게이트 실행 요약 (워크플로우 상태 영속 + PR 본문 표기용).
+ * 전체 stdout/stderr 대신 PR/상태에 남길 핵심 메타데이터만 보관한다.
+ */
+export interface E2eSummary {
+  passed: boolean;
+  /** 실행 시간(ms) */
+  durationMs: number;
+  /** 실행한 e2e 명령 */
+  command: string;
+  /** 검증 대상 base URL */
+  url: string;
+  /** 프로세스 종료 코드 (타임아웃/실행오류 시 null) */
+  exitCode: number | null;
+  /** 타임아웃 여부 */
+  timedOut: boolean;
+}
