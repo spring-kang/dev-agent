@@ -12,6 +12,8 @@ import type { GitService } from "../services/git.service.js";
 import type { StateManager } from "../components/state-manager.js";
 import type { ReviewEngine } from "../components/review-engine.js";
 import type { Logger } from "../components/logger.js";
+import { E2eVerifier } from "../components/e2e-verifier.js";
+import type { ReviewResult } from "../types/review.js";
 import type {
   WorkflowRequest,
   WorkflowResult,
@@ -37,6 +39,8 @@ export class Orchestrator {
     private readonly reviewEngine: ReviewEngine,
     private readonly eventEmitter: EventEmitter,
     private readonly logger: Logger,
+    /** E2E 검증기 (선택). 주입되고 config.e2eEnabled=true 일 때만 PR 직전 게이트로 동작 */
+    private readonly e2eVerifier?: E2eVerifier,
   ) {}
 
   /**
@@ -253,6 +257,34 @@ export class Orchestrator {
       state.artifacts = cycleResult.artifacts;
 
       if (cycleResult.reviewResult.status === "APPROVED") {
+        // E2E(Playwright) 검증 게이트 (opt-in): 통과해야 PR 을 생성한다.
+        const e2eFeedback = await this.runE2eGate(request, state);
+        if (e2eFeedback) {
+          // 검증 실패 → CHANGES_REQUESTED 로 되돌려 다음 사이클에 Codex 가 수정하도록 한다.
+          state.reviewHistory.push(e2eFeedback);
+          await this.stateManager.save(state);
+          previousFeedback = e2eFeedback;
+          reworkScope = e2eFeedback.recommendation;
+
+          // 동일 e2e 실패가 반복되면 stall 감지로 사용자에게 조기 위임.
+          const stalled = stallDetector.record(cycleResult.changedFiles.length, e2eFeedback);
+          if (stalled) {
+            const stallResult = await this.handleStallDetected(
+              request,
+              state,
+              start,
+              stallDetector.count,
+            );
+            if (stallResult) {
+              return stallResult;
+            }
+            stallDetector.reset();
+          }
+
+          cycleNumber++;
+          continue;
+        }
+
         // PR 생성
         state.currentPhase = "pr_creation";
         await this.stateManager.save(state);
@@ -324,6 +356,76 @@ export class Orchestrator {
 
     // 최대 반복 도달
     return this.handleMaxIterationsReached(request, state, start);
+  }
+
+  /**
+   * E2E 검증 게이트.
+   * - e2eEnabled=false 또는 verifier 미주입이면 즉시 통과(null).
+   * - 통과 시 null, 실패(또는 실행 오류) 시 CHANGES_REQUESTED 합성 피드백 반환.
+   */
+  private async runE2eGate(
+    request: WorkflowRequest,
+    state: WorkflowState,
+  ): Promise<ReviewResult | null> {
+    if (!request.config.e2eEnabled || !this.e2eVerifier) {
+      return null;
+    }
+
+    const url = request.config.e2eUrl;
+    this.logger.info(`E2E 검증 게이트 실행 (cycle=${state.currentCycle})`);
+    this.safeEmit("e2e:start", {
+      type: "e2e:start",
+      workflowId: state.workflowId,
+      url,
+      command: request.config.e2eCommand,
+      timestamp: new Date().toISOString(),
+    });
+
+    try {
+      const result = await this.e2eVerifier.verify({
+        projectPath: request.projectPath,
+        url,
+        command: request.config.e2eCommand,
+        timeout: request.config.e2eTimeout,
+      });
+
+      this.safeEmit("e2e:complete", {
+        type: "e2e:complete",
+        workflowId: state.workflowId,
+        passed: result.passed,
+        timestamp: new Date().toISOString(),
+      });
+
+      if (result.passed) {
+        return null;
+      }
+      return E2eVerifier.buildFeedbackFromFailure(result, url);
+    } catch (error) {
+      // 실행 자체 실패(명령 미존재 등) → 게이트 실패로 처리(PR 보류).
+      const message = error instanceof Error ? error.message : String(error);
+      this.logger.warn(`E2E 검증 실행 오류: ${message}`);
+      this.safeEmit("e2e:complete", {
+        type: "e2e:complete",
+        workflowId: state.workflowId,
+        passed: false,
+        timestamp: new Date().toISOString(),
+      });
+      return {
+        status: "CHANGES_REQUESTED",
+        checks: [{ name: "tests", passed: false, details: `E2E 실행 오류: ${message}` }],
+        findings: [
+          {
+            severity: "critical",
+            location: url || "(e2e)",
+            description: `E2E 검증을 실행하지 못했습니다: ${message}`,
+            suggestion:
+              "e2eCommand/e2eUrl 설정과 테스트 러너(예: playwright) 설치 상태를 확인하세요.",
+          },
+        ],
+        summary: "E2E 실행 오류로 PR 생성을 보류합니다.",
+        recommendation: "partial",
+      };
+    }
   }
 
   /**

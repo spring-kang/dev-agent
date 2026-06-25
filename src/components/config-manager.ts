@@ -29,6 +29,10 @@ const ENV_KEY_MAP: Record<string, keyof WorkflowConfig> = {
   DEV_AGENT_CLAUDE_TIMEOUT: "claudeTimeout",
   DEV_AGENT_CODEX_TIMEOUT: "codexTimeout",
   DEV_AGENT_BASE_BRANCH: "baseBranch",
+  DEV_AGENT_E2E_ENABLED: "e2eEnabled",
+  DEV_AGENT_E2E_URL: "e2eUrl",
+  DEV_AGENT_E2E_COMMAND: "e2eCommand",
+  DEV_AGENT_E2E_TIMEOUT: "e2eTimeout",
 };
 
 export class ConfigManager {
@@ -203,9 +207,11 @@ export class ConfigManager {
       case "maxIterations":
       case "claudeTimeout":
       case "codexTimeout":
+      case "e2eTimeout":
         return parseInt(value, 10);
       case "prIncludeReviewSummary":
       case "autoCommit":
+      case "e2eEnabled":
         return value.toLowerCase() === "true";
       default:
         return value;

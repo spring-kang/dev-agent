@@ -10,6 +10,7 @@ import { WorkspaceManager } from "./components/workspace-manager.js";
 import { StateManager } from "./components/state-manager.js";
 import { ClaudeAgent } from "./components/claude-agent.js";
 import { CodexAgent } from "./components/codex-agent.js";
+import { E2eVerifier } from "./components/e2e-verifier.js";
 import { GitManager } from "./components/git-manager.js";
 import { GitService } from "./services/git.service.js";
 import { ReviewEngine } from "./components/review-engine.js";
@@ -232,6 +233,7 @@ async function buildCore(): Promise<CoreServices> {
     eventEmitter,
     logger,
   );
+  const e2eVerifier = new E2eVerifier(logger);
   const orchestrator = new Orchestrator(
     pipelineService,
     gitService,
@@ -239,6 +241,7 @@ async function buildCore(): Promise<CoreServices> {
     reviewEngine,
     eventEmitter,
     logger,
+    e2eVerifier,
   );
 
   // ── Phase 5: U-05 CLI & Workflow ──

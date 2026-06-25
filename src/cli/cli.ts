@@ -223,6 +223,12 @@ export class CLI {
         "--no-follow-up",
         "반복 소진/정체로 종료 시 후속 작업 Notion 티켓 자동 생성 비활성화",
       )
+      .option(
+        "--e2e",
+        "리뷰 통과(APPROVED) 후 PR 생성 직전에 E2E(Playwright) 검증 실행 (--e2e-url 동반 권장)",
+      )
+      .option("--e2e-url <url>", "E2E 검증 대상 base URL (예: http://localhost:3000)")
+      .option("--e2e-command <cmd>", "E2E 실행 명령 (기본: 'npx playwright test')")
       .action(async (pageIdOrUrl: string | undefined, options: Record<string, unknown>) => {
         const taskValue = pageIdOrUrl ?? this.rc.task;
         if (!taskValue) {
@@ -379,6 +385,15 @@ export class CLI {
     const cliOverrides: Partial<import("../types/config.js").WorkflowConfig> = {};
     if (options["maxIterations"]) {
       cliOverrides.maxIterations = options["maxIterations"] as number;
+    }
+
+    // E2E 검증 옵션: --e2e 또는 --e2e-url/--e2e-command 중 하나라도 있으면 활성화.
+    const e2eUrl = options["e2eUrl"] as string | undefined;
+    const e2eCommand = options["e2eCommand"] as string | undefined;
+    if (options["e2e"] === true || e2eUrl || e2eCommand) {
+      cliOverrides.e2eEnabled = true;
+      if (e2eUrl) cliOverrides.e2eUrl = e2eUrl;
+      if (e2eCommand) cliOverrides.e2eCommand = e2eCommand;
     }
 
     // commander: `--no-follow-up` 지정 시 options.followUp === false (미지정 시 true)

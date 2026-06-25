@@ -24,6 +24,28 @@ export interface WorkflowConfig {
    * - 기본값: "main" (저장소에 따라 "master" 등으로 변경 가능)
    */
   baseBranch: string;
+  /**
+   * E2E(Playwright) 검증 활성화 여부.
+   * - true 이면 리뷰가 APPROVED 된 직후, PR 생성 직전에 e2eCommand 를 실행한다.
+   * - 실패 시 PR 생성을 보류하고 합성 CHANGES_REQUESTED 피드백으로 다음 사이클에 되돌린다.
+   * - 기본값: false (opt-in → 기존 동작 무변경)
+   */
+  e2eEnabled: boolean;
+  /**
+   * E2E 검증 대상 base URL (예: http://localhost:3000).
+   * - 실행 시 PLAYWRIGHT_BASE_URL / BASE_URL / E2E_BASE_URL 환경변수로 주입된다.
+   * - 비어 있으면 env 주입을 생략(테스트가 자체 URL 을 알고 있다고 가정).
+   */
+  e2eUrl: string;
+  /**
+   * E2E 실행 명령. shell 없이 공백 기준 argv 로 분해되어 실행된다(shell:false).
+   * - 기본값: "npx playwright test"
+   */
+  e2eCommand: string;
+  /**
+   * E2E 실행 타임아웃(ms).
+   */
+  e2eTimeout: number;
 }
 
 export type LogLevel = "debug" | "info" | "warn" | "error";
@@ -46,6 +68,11 @@ export const DEFAULT_CONFIG: Readonly<WorkflowConfig> = {
   // 기획은 사용자가 직접 claude로 진행 → 리뷰는 비용/품질 균형이 좋은 Sonnet으로 고정 기본값.
   reviewModel: "claude-sonnet-4-5-20250929",
   baseBranch: "main",
+  // E2E 검증은 기본 비활성(opt-in). CLI(--e2e/--e2e-url) 또는 설정으로 켠다.
+  e2eEnabled: false,
+  e2eUrl: "",
+  e2eCommand: "npx playwright test",
+  e2eTimeout: 300_000,
 };
 
 export const CONFIG_KEYS = Object.keys(DEFAULT_CONFIG) as (keyof WorkflowConfig)[];
@@ -148,5 +175,28 @@ export const CONFIG_VALIDATION_RULES: ConfigValidationRule[] = [
     validate: (v) =>
       typeof v === "string" && v.length > 0 && v.length <= 100 && /^[A-Za-z0-9._/\-]+$/.test(v),
     message: "baseBranch는 비어있지 않은 git 브랜치명(영문/숫자/./-/_// )이어야 합니다",
+  },
+  {
+    key: "e2eEnabled",
+    validate: (v) => typeof v === "boolean",
+    message: "e2eEnabled는 boolean이어야 합니다",
+  },
+  {
+    key: "e2eUrl",
+    // 빈 문자열 허용(= env 주입 생략). 비어있지 않으면 http/https URL 만 허용.
+    validate: (v) => typeof v === "string" && (v.length === 0 || /^https?:\/\/\S+$/.test(v)),
+    message: "e2eUrl은 빈 문자열이거나 http(s):// 로 시작하는 URL이어야 합니다",
+  },
+  {
+    key: "e2eCommand",
+    // 비어있지 않은 문자열. 셸 메타문자(파이프/리다이렉트/명령연결)는 금지(shell:false 안전성).
+    validate: (v) =>
+      typeof v === "string" && v.trim().length > 0 && !/[;&|<>`$(){}]/.test(v),
+    message: "e2eCommand는 셸 메타문자 없는 비어있지 않은 명령 문자열이어야 합니다",
+  },
+  {
+    key: "e2eTimeout",
+    validate: (v) => typeof v === "number" && v >= 10_000 && v <= 1_800_000,
+    message: "e2eTimeout은 10,000~1,800,000ms 사이여야 합니다",
   },
 ];
