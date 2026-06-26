@@ -172,6 +172,17 @@ export class CLI {
       });
 
     notionCmd
+      .command("create")
+      .description("Notion DB에 새 페이지를 생성하고 ID/URL 출력")
+      .requiredOption("--title <title>", "새 페이지 제목")
+      .option("--db <id>", "Database ID (생략 시 기본 DB 사용)")
+      .option("--status <name>", "초기 Status 값 (예: Draft, Planning)")
+      .option("--from <path>", "본문으로 채울 마크다운 파일 경로")
+      .action(async (options: Record<string, unknown>) => {
+        await this.handleNotionCreate(options);
+      });
+
+    notionCmd
       .command("clear")
       .description("저장된 Notion 인증 제거")
       .action(async () => {
@@ -318,6 +329,18 @@ export class CLI {
       .option("--max <number>", "최대 개수", parseInt, 20)
       .action(async (options: Record<string, unknown>) => {
         await this.handleNotionListTasks(options);
+      });
+
+    // create — DB에 새 빈 페이지(task)를 생성하고 ID/URL 출력 (--from 시 본문 채움)
+    notionAliasCmd
+      .command("create")
+      .description("Notion DB에 새 페이지를 생성하고 ID/URL 출력 (devagent build 입력용)")
+      .requiredOption("--title <title>", "새 페이지 제목")
+      .option("--db <id>", "Database ID (생략 시 기본 DB 사용)")
+      .option("--status <name>", "초기 Status 값 (예: Draft, Planning)")
+      .option("--from <path>", "본문으로 채울 마크다운 파일 경로")
+      .action(async (options: Record<string, unknown>) => {
+        await this.handleNotionCreate(options);
       });
 
     // pull <pageId> — Notion 페이지 본문을 마크다운으로 stdout/파일로 추출
@@ -903,6 +926,69 @@ export class CLI {
       await appender.appendBlocks(pageId, blocks);
       console.log(`✅ Notion 페이지 ${pageId} 에 ${blocks.length}개 block append 완료`);
     }
+  }
+
+  /**
+   * `devagent notion create --title <t> [--db <id>] [--status <s>] [--from <file>]`
+   * DB에 새 페이지(task)를 생성하고 ID/URL 을 출력한다.
+   * devagent build 의 입력이 되는 빈 Notion 페이지를 CLI에서 바로 만들기 위한 명령.
+   */
+  private async handleNotionCreate(options: Record<string, unknown>): Promise<void> {
+    const cfg = this.getNotionConfig();
+    const notion = await cfg.getNotion();
+    if (!notion) {
+      console.log("❌ Notion 인증이 설정되지 않았습니다. 'dev-agent integrations notion set' 실행");
+      process.exitCode = 1;
+      return;
+    }
+
+    const title = String(options["title"] ?? "").trim();
+    if (!title) {
+      console.log("❌ --title 값이 비어있습니다");
+      process.exitCode = 1;
+      return;
+    }
+
+    const dbId = (options["db"] as string | undefined) ?? notion.defaultDatabaseId;
+    if (!dbId) {
+      console.log(
+        "❌ Database ID가 필요합니다. --db <id> 옵션 또는 'integrations notion set --default-db' 사용",
+      );
+      process.exitCode = 1;
+      return;
+    }
+
+    const status = options["status"] as string | undefined;
+
+    const { NotionClient } = await import("../integrations/notion-client.js");
+    const client = new NotionClient(notion.auth, this.logger, notion.propertyMapping);
+    const page = await client.createPage({
+      databaseId: dbId,
+      title,
+      ...(status ? { status } : {}),
+    });
+
+    // --from 지정 시 본문을 마크다운으로 채운다.
+    const fromPath = options["from"] as string | undefined;
+    if (fromPath) {
+      const filePath = path.resolve(fromPath);
+      const { readFile } = await import("node:fs/promises");
+      const markdown = await readFile(filePath, "utf-8");
+      if (markdown.trim().length > 0) {
+        const { NotionBlockAppender } = await import("../integrations/notion-block-appender.js");
+        const appender = new NotionBlockAppender(notion.auth, this.logger);
+        const blocks = appender.markdownToBlocks(markdown);
+        await appender.appendBlocks(page.id, blocks);
+        console.log(`   📄 본문 ${blocks.length}개 block 추가 (${filePath})`);
+      }
+    }
+
+    console.log("");
+    console.log(`✅ Notion 페이지 생성 완료`);
+    console.log(`   ID  : ${page.id}`);
+    if (page.url) console.log(`   URL : ${page.url}`);
+    console.log("");
+    console.log(`   💡 기획 시작: devagent build ${page.id}`);
   }
 
   /**
