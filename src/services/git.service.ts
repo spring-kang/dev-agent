@@ -41,20 +41,30 @@ export class GitService {
       this.logger.warn(`작업 중인 변경사항이 감지되었습니다: ${preview}${suffix}`);
     }
 
-    // 2. 후속 작업이 기존 미머지 PR을 이어받아야 하는지 확인
+    // 2. 후속 작업이 원본 PR 브랜치 위에 stacked PR 을 올려야 하는지 확인.
+    //    원본 PR 이 OPEN(브랜치가 원격에 살아있음)이면, 그 head 브랜치에서 새 작업 브랜치를
+    //    분기하고 PR base 를 원본 head 브랜치로 지정한다(=원본 대비 diff 로만 리뷰).
+    //    원본 PR 이 닫혔거나 조회 실패 시엔 아래 일반 경로(main 기반)로 진행한다.
     const existingFollowUpPrUrl = this.extractFollowUpPrUrl(taskDescription);
     if (existingFollowUpPrUrl) {
       const prInfo = await this.gitManager.getPullRequestInfo(projectPath, existingFollowUpPrUrl);
       if (prInfo?.state === "OPEN") {
-        await this.gitManager.checkoutRemoteBranch(projectPath, prInfo.headRefName);
+        const branchName = await this.gitManager.createBranchFromRemote(
+          projectPath,
+          taskDescription,
+          branchPrefix,
+          prInfo.headRefName,
+        );
         this.logger.info(
-          `후속 작업: 기존 OPEN PR 브랜치에 이어서 작업합니다 (${prInfo.headRefName})`,
+          `후속 작업: 원본 PR 브랜치(${prInfo.headRefName}) 위에 stacked PR 을 올립니다 ` +
+            `(작업 브랜치=${branchName}, PR base=${prInfo.headRefName})`,
         );
         return {
-          branchName: prInfo.headRefName,
+          branchName,
           hadDirtyState: dirtyState.isDirty,
           dirtyFiles: dirtyState.isDirty ? dirtyState : undefined,
           continuedFromPrUrl: prInfo.url,
+          baseBranchOverride: prInfo.headRefName,
         };
       }
     }

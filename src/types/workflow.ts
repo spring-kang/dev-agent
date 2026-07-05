@@ -80,6 +80,12 @@ export interface WorkflowState {
   currentCycle: number;
   maxIterations: number;
   branchName: string;
+  /**
+   * PR base 브랜치 오버라이드 (후속 작업 stacked PR 용).
+   * 후속 티켓이 원본 PR 브랜치 위에서 분기한 경우, finalize 시 PR base 를 원본 PR head 브랜치로
+   * 지정하기 위해 GitService.initWorkflow 결과에서 채워진다. 없으면 config.baseBranch 사용.
+   */
+  baseBranchOverride?: string;
   artifacts: WorkflowArtifacts;
   reviewHistory: ReviewResult[];
   startedAt: string;

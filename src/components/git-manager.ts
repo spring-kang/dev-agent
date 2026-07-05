@@ -125,6 +125,25 @@ export class GitManager {
   }
 
   /**
+   * 원격 브랜치(origin/<remoteBaseBranch>) 위에서 새 작업 브랜치를 분기한다.
+   *
+   * 후속 작업이 원본 PR 브랜치 위에 stacked PR 을 올릴 때 사용한다.
+   * origin/<remoteBaseBranch> 최신 상태를 가져온 뒤 그 지점에서 새 브랜치를 만든다.
+   */
+  async createBranchFromRemote(
+    projectPath: string,
+    taskDescription: string,
+    branchPrefix: string,
+    remoteBaseBranch: string,
+  ): Promise<string> {
+    // 원본 PR 브랜치 최신 상태 확보 후 그 지점을 HEAD 로 이동(detached).
+    await this.execGit(projectPath, ["fetch", "origin", remoteBaseBranch], GIT_NETWORK_TIMEOUT);
+    await this.execGit(projectPath, ["checkout", "--detach", `origin/${remoteBaseBranch}`]);
+    // 현재 HEAD(=origin/<remoteBaseBranch>)에서 새 브랜치를 분기한다.
+    return this.createBranch(projectPath, taskDescription, branchPrefix);
+  }
+
+  /**
    * PR URL로 GitHub PR 정보를 조회한다.
    */
   async getPullRequestInfo(projectPath: string, prUrl: string): Promise<PullRequestInfo | null> {
