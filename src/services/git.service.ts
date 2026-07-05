@@ -41,11 +41,39 @@ export class GitService {
       this.logger.warn(`작업 중인 변경사항이 감지되었습니다: ${preview}${suffix}`);
     }
 
-    // 2. base 브랜치 동기화 (origin fetch/checkout/pull --ff-only)
+    // 2. 후속 작업이 원본 PR 브랜치 위에 stacked PR 을 올려야 하는지 확인.
+    //    원본 PR 이 OPEN(브랜치가 원격에 살아있음)이면, 그 head 브랜치에서 새 작업 브랜치를
+    //    분기하고 PR base 를 원본 head 브랜치로 지정한다(=원본 대비 diff 로만 리뷰).
+    //    원본 PR 이 닫혔거나 조회 실패 시엔 아래 일반 경로(main 기반)로 진행한다.
+    const existingFollowUpPrUrl = this.extractFollowUpPrUrl(taskDescription);
+    if (existingFollowUpPrUrl) {
+      const prInfo = await this.gitManager.getPullRequestInfo(projectPath, existingFollowUpPrUrl);
+      if (prInfo?.state === "OPEN") {
+        const branchName = await this.gitManager.createBranchFromRemote(
+          projectPath,
+          taskDescription,
+          branchPrefix,
+          prInfo.headRefName,
+        );
+        this.logger.info(
+          `후속 작업: 원본 PR 브랜치(${prInfo.headRefName}) 위에 stacked PR 을 올립니다 ` +
+            `(작업 브랜치=${branchName}, PR base=${prInfo.headRefName})`,
+        );
+        return {
+          branchName,
+          hadDirtyState: dirtyState.isDirty,
+          dirtyFiles: dirtyState.isDirty ? dirtyState : undefined,
+          continuedFromPrUrl: prInfo.url,
+          baseBranchOverride: prInfo.headRefName,
+        };
+      }
+    }
+
+    // 3. base 브랜치 동기화 (origin fetch/checkout/pull --ff-only)
     //    브랜치 생성 전에 항상 최신 base에서 분기하도록 보장한다.
     await this.gitManager.syncBaseBranch(projectPath, baseBranch);
 
-    // 3. 브랜치 생성
+    // 4. 브랜치 생성
     const branchName = await this.gitManager.createBranch(
       projectPath,
       taskDescription,
@@ -105,6 +133,15 @@ export class GitService {
     });
 
     return { prUrl, branchName };
+  }
+
+  /**
+   * 후속 작업 티켓 본문에 기록된 원본 PR URL을 추출한다.
+   * 형식 예: `- 생성된 PR: https://github.com/org/repo/pull/123`
+   */
+  private extractFollowUpPrUrl(taskDescription: string): string | undefined {
+    const match = taskDescription.match(/생성된 PR:\s*(https:\/\/github\.com\/[^\s)]+)/);
+    return match?.[1];
   }
 
   /**

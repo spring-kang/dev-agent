@@ -23,6 +23,21 @@ export interface GitInitResult {
   branchName: string;
   hadDirtyState: boolean;
   dirtyFiles?: DirtyStateInfo;
+  /** 후속 작업의 기반이 된 원본 PR URL (stacked PR 로그/추적용). */
+  continuedFromPrUrl?: string;
+  /**
+   * PR base 브랜치 오버라이드.
+   * 후속 작업이 원본 PR 브랜치 위에 stacked PR 을 올릴 때, PR base 를 config.baseBranch(main)
+   * 대신 원본 PR 의 head 브랜치로 지정하기 위해 사용한다. 없으면 config.baseBranch 를 사용한다.
+   */
+  baseBranchOverride?: string;
+}
+
+export interface PullRequestInfo {
+  url: string;
+  state: string;
+  headRefName: string;
+  baseRefName: string;
 }
 
 export interface FinalizeContext {

@@ -91,6 +91,10 @@ export class Orchestrator {
         request.config.baseBranch,
       );
       state.branchName = gitInit.branchName;
+      // 후속 작업 stacked PR: PR base 를 원본 PR head 브랜치로 오버라이드 (finalize 에서 사용).
+      if (gitInit.baseBranchOverride) {
+        state.baseBranchOverride = gitInit.baseBranchOverride;
+      }
       await this.stateManager.save(state);
 
       // 사이클 루프
@@ -292,7 +296,7 @@ export class Orchestrator {
         const finalizeResult = await this.gitService.finalize(
           request.projectPath,
           state.branchName,
-          request.config.baseBranch,
+          state.baseBranchOverride ?? request.config.baseBranch,
           this.buildFinalizeContext(state),
           request.config.prIncludeReviewSummary,
         );
@@ -534,7 +538,7 @@ export class Orchestrator {
     const finalizeResult = await this.gitService.finalize(
       request.projectPath,
       state.branchName,
-      request.config.baseBranch,
+      state.baseBranchOverride ?? request.config.baseBranch,
       context,
       request.config.prIncludeReviewSummary,
     );
