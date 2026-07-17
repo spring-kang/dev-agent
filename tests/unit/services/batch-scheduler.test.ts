@@ -11,6 +11,7 @@
 import { describe, it, expect } from "vitest";
 import {
   parseDomainKey,
+  toSafeWorktreeKey,
   parseSliceNumber,
   groupTasksByDomain,
   toBatchTaskInput,
@@ -33,6 +34,17 @@ describe("parseDomainKey", () => {
   });
 });
 
+describe("toSafeWorktreeKey", () => {
+  it("경로 구분자와 특수문자를 안전한 slug로 바꾼다", () => {
+    expect(toSafeWorktreeKey("[채용공고] Greenhouse/Lever API")).toBe("greenhouse-lever-api");
+    expect(toSafeWorktreeKey("interview")).toBe("interview");
+  });
+
+  it("slug로 남길 문자가 없으면 task를 반환한다", () => {
+    expect(toSafeWorktreeKey("채용공고")).toBe("task");
+  });
+});
+
 describe("parseSliceNumber", () => {
   it("prefix 패턴에서 슬라이스 번호를 추출한다", () => {
     expect(parseSliceNumber("interview-1: ...")).toBe(1);
@@ -47,10 +59,38 @@ describe("parseSliceNumber", () => {
 describe("groupTasksByDomain", () => {
   it("도메인별로 그룹핑하고 레인 내부는 슬라이스 오름차순 정렬한다", () => {
     const tasks: BatchTaskInput[] = [
-      { pageId: "a", title: "interview-3", domain: "interview", slice: 3, projectPath: "/p" },
-      { pageId: "b", title: "interview-1", domain: "interview", slice: 1, projectPath: "/p" },
-      { pageId: "c", title: "learning-2", domain: "learning", slice: 2, projectPath: "/p" },
-      { pageId: "d", title: "interview-2", domain: "interview", slice: 2, projectPath: "/p" },
+      {
+        pageId: "a",
+        title: "interview-3",
+        domain: "interview",
+        worktreeKey: "interview",
+        slice: 3,
+        projectPath: "/p",
+      },
+      {
+        pageId: "b",
+        title: "interview-1",
+        domain: "interview",
+        worktreeKey: "interview",
+        slice: 1,
+        projectPath: "/p",
+      },
+      {
+        pageId: "c",
+        title: "learning-2",
+        domain: "learning",
+        worktreeKey: "learning",
+        slice: 2,
+        projectPath: "/p",
+      },
+      {
+        pageId: "d",
+        title: "interview-2",
+        domain: "interview",
+        worktreeKey: "interview",
+        slice: 2,
+        projectPath: "/p",
+      },
     ];
 
     const lanes = groupTasksByDomain(tasks);
@@ -64,14 +104,25 @@ describe("groupTasksByDomain", () => {
 
   it("슬라이스가 같으면 제목 오름차순으로 정렬한다", () => {
     const tasks: BatchTaskInput[] = [
-      { pageId: "a", title: "community-1: B", domain: "community", slice: 1, projectPath: "/p" },
-      { pageId: "b", title: "community-1: A", domain: "community", slice: 1, projectPath: "/p" },
+      {
+        pageId: "a",
+        title: "community-1: B",
+        domain: "community",
+        worktreeKey: "community",
+        slice: 1,
+        projectPath: "/p",
+      },
+      {
+        pageId: "b",
+        title: "community-1: A",
+        domain: "community",
+        worktreeKey: "community",
+        slice: 1,
+        projectPath: "/p",
+      },
     ];
     const lanes = groupTasksByDomain(tasks);
-    expect(lanes[0]!.tasks.map((t) => t.title)).toEqual([
-      "community-1: A",
-      "community-1: B",
-    ]);
+    expect(lanes[0]!.tasks.map((t) => t.title)).toEqual(["community-1: A", "community-1: B"]);
   });
 
   it("빈 목록은 빈 레인 배열을 반환한다", () => {
@@ -91,6 +142,7 @@ describe("toBatchTaskInput", () => {
       title: "admin-5: 통계 대시보드",
       projectPath: "/repo",
       domain: "admin",
+      worktreeKey: "admin",
       slice: 5,
     });
   });
@@ -139,14 +191,34 @@ describe("runWithConcurrency", () => {
 describe("summarizeOutcomes", () => {
   it("성공/실패/건너뜀 통계를 집계한다", () => {
     const outcomes: BatchTaskOutcome[] = [
-      { pageId: "a", title: "interview-1", domain: "interview", status: "succeeded", prUrl: "http://pr/1" },
+      {
+        pageId: "a",
+        title: "interview-1",
+        domain: "interview",
+        status: "succeeded",
+        prUrl: "http://pr/1",
+      },
       { pageId: "b", title: "interview-2", domain: "interview", status: "failed", error: "boom" },
       { pageId: "c", title: "interview-3", domain: "interview", status: "skipped" },
       { pageId: "d", title: "learning-1", domain: "learning", status: "succeeded" },
     ];
     const lanes = groupTasksByDomain([
-      { pageId: "a", title: "interview-1", domain: "interview", slice: 1, projectPath: "/p" },
-      { pageId: "d", title: "learning-1", domain: "learning", slice: 1, projectPath: "/p" },
+      {
+        pageId: "a",
+        title: "interview-1",
+        domain: "interview",
+        worktreeKey: "interview",
+        slice: 1,
+        projectPath: "/p",
+      },
+      {
+        pageId: "d",
+        title: "learning-1",
+        domain: "learning",
+        worktreeKey: "learning",
+        slice: 1,
+        projectPath: "/p",
+      },
     ]);
 
     const summary = summarizeOutcomes(outcomes, lanes, false);
@@ -166,5 +238,28 @@ describe("summarizeOutcomes", () => {
     const summary = summarizeOutcomes([], [], true);
     expect(summary.dryRun).toBe(true);
     expect(summary.total).toBe(0);
+  });
+
+  it("dryRun에서는 outcome 대신 레인의 task 수를 total로 표시한다", () => {
+    const lanes = groupTasksByDomain([
+      {
+        pageId: "a",
+        title: "interview-1",
+        domain: "interview",
+        worktreeKey: "interview",
+        slice: 1,
+        projectPath: "/p",
+      },
+      {
+        pageId: "b",
+        title: "interview-2",
+        domain: "interview",
+        worktreeKey: "interview",
+        slice: 2,
+        projectPath: "/p",
+      },
+    ]);
+    const summary = summarizeOutcomes([], lanes, true);
+    expect(summary.total).toBe(2);
   });
 });

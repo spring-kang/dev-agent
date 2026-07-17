@@ -16,6 +16,8 @@ export interface BatchTaskInput {
   pageId: string;
   title: string;
   domain: string;
+  /** 파일/디렉터리명에 안전하게 쓸 수 있는 도메인 키 */
+  worktreeKey: string;
   /** 슬라이스 번호 (제목에서 추출, 없으면 0) */
   slice: number;
   /** Notion 속성에서 읽은 프로젝트 경로 (빌드 base 저장소 결정에 사용) */
@@ -62,6 +64,20 @@ export function parseDomainKey(title: string): string {
   const m = trimmed.match(DOMAIN_PATTERN);
   if (m && m[1]) return m[1].toLowerCase();
   return trimmed.toLowerCase();
+}
+
+/**
+ * worktree 경로 구성에 안전한 키로 변환한다.
+ * 제목 전체가 도메인이 되는 단독 작업은 `/`, 공백, 괄호 등이 섞일 수 있다.
+ */
+export function toSafeWorktreeKey(value: string): string {
+  const normalized = value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "");
+  return normalized || "task";
 }
 
 /**
@@ -119,6 +135,7 @@ export function toBatchTaskInput(task: {
     title: task.title,
     projectPath: task.projectPath,
     domain: parseDomainKey(task.title),
+    worktreeKey: toSafeWorktreeKey(parseDomainKey(task.title)),
     slice: parseSliceNumber(task.title),
   };
 }
@@ -173,7 +190,7 @@ export function summarizeOutcomes(
     else skipped++;
   }
   return {
-    total: outcomes.length,
+    total: dryRun ? lanes.reduce((sum, lane) => sum + lane.tasks.length, 0) : outcomes.length,
     succeeded,
     failed,
     skipped,

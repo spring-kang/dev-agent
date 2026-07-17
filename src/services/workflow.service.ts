@@ -15,11 +15,7 @@ import type { StateManager } from "../components/state-manager.js";
 import type { MonitoringService } from "./monitoring.service.js";
 import type { Logger } from "../components/logger.js";
 import type { GitManager } from "../components/git-manager.js";
-import type {
-  WorkflowRequest,
-  WorkflowResult,
-  WorkflowStatus,
-} from "../types/workflow.js";
+import type { WorkflowRequest, WorkflowResult, WorkflowStatus } from "../types/workflow.js";
 import type { WorkflowConfig } from "../types/config.js";
 import { PreflightError, WorkflowServiceError } from "../types/errors.js";
 import type { NotionStatusSync } from "../integrations/notion-status-sync.js";
@@ -210,8 +206,7 @@ export class WorkflowService {
     }
 
     // 3) 프로젝트 경로 결정 (CLI > rc > Notion 속성)
-    const resolvedProjectPath =
-      options?.projectPath?.trim() || task.projectPath.trim();
+    const resolvedProjectPath = options?.projectPath?.trim() || task.projectPath.trim();
     if (!resolvedProjectPath) {
       throw new WorkflowServiceError(
         "프로젝트 경로가 지정되지 않았습니다. --project 옵션, .devagentrc, 또는 Notion task의 'Project Path' 속성 중 하나로 전달하세요.",
@@ -355,10 +350,7 @@ export class WorkflowService {
     }
 
     // 4) base 브랜치 확정 + 사전 fetch (동시 fetch ref-lock 경합 방지)
-    const { value: baseConfig } = await this.configManager.load(
-      basePath,
-      options.cliOverrides,
-    );
+    const { value: baseConfig } = await this.configManager.load(basePath, options.cliOverrides);
     const baseBranch = baseConfig.baseBranch;
     await this.gitManager.fetchBase(basePath, baseBranch);
     const baseRef = await this.gitManager.resolveWorktreeBaseRef(basePath, baseBranch);
@@ -383,9 +375,7 @@ export class WorkflowService {
 
       for (const task of lane.tasks) {
         if (laneFailed) {
-          this.logger.warn(
-            `[${lane.domain}] 이전 슬라이스 실패로 skip: ${task.title}`,
-          );
+          this.logger.warn(`[${lane.domain}] 이전 슬라이스 실패로 skip: ${task.title}`);
           outcomes.push({
             pageId: task.pageId,
             title: task.title,
@@ -436,7 +426,7 @@ export class WorkflowService {
     const rand = crypto.randomBytes(3).toString("hex");
     const worktreePath = path.join(
       worktreeRoot,
-      `${task.domain}-${task.slice}-${shortId}-${rand}`,
+      `${task.worktreeKey}-${task.slice}-${shortId}-${rand}`,
     );
 
     const base: Omit<BatchTaskOutcome, "status"> = {
@@ -448,9 +438,7 @@ export class WorkflowService {
     try {
       await this.gitManager.addDetachedWorktree(basePath, worktreePath, baseRef);
     } catch (err) {
-      this.logger.error(
-        `[${task.domain}] worktree 생성 실패: ${(err as Error).message}`,
-      );
+      this.logger.error(`[${task.domain}] worktree 생성 실패: ${(err as Error).message}`);
       return { ...base, status: "failed", error: `worktree 생성 실패: ${(err as Error).message}` };
     }
 
@@ -579,7 +567,7 @@ export class WorkflowService {
 
       if (notionPageId && this.notionFollowUpService) {
         try {
-          const title = state.taskDescription.split('\n')[0] ?? state.taskDescription;
+          const title = state.taskDescription.split("\n")[0] ?? state.taskDescription;
           await this.notionFollowUpService.createFollowUpIfNeeded({
             sourcePageId: notionPageId,
             taskTitle: title,
@@ -646,9 +634,7 @@ export class WorkflowService {
     // 3. CLI 도구 확인
     const prereq = await this.workspaceManager.checkPrerequisites();
     if (!prereq.allPassed) {
-      const missing = prereq.checks
-        .filter((c) => c.required && !c.found)
-        .map((c) => c.tool);
+      const missing = prereq.checks.filter((c) => c.required && !c.found).map((c) => c.tool);
       errors.push(`필수 도구 누락: ${missing.join(", ")}`);
     }
 
