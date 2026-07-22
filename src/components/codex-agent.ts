@@ -25,6 +25,14 @@ export class CodexAgent implements ImplementationAgent {
   constructor(
     private readonly logger: Logger,
     private readonly timeout: number = 1_200_000,
+    /**
+     * 사용할 codex 모델 ID. 빈 문자열이면 codex CLI 기본 모델(~/.codex/config.toml)을 따른다.
+     */
+    private readonly model: string = "",
+    /**
+     * 추론 강도(minimal|low|medium|high). 빈 문자열이면 codex CLI 기본값을 따른다.
+     */
+    private readonly reasoningEffort: string = "",
   ) {}
 
   /**
@@ -66,7 +74,9 @@ ${specContent}
 
 프로젝트 경로에서 직접 파일을 생성/수정하세요.`;
 
-    this.logger.info("Codex 구현 시작");
+    this.logger.info(
+      `Codex 구현 시작 (model=${this.model || "(codex 기본)"}, effort=${this.reasoningEffort || "(codex 기본)"})`,
+    );
 
     const result = await this.executeCodexCli(prompt, request.projectPath);
 
@@ -197,8 +207,19 @@ ${specContent}
         "--dangerously-bypass-approvals-and-sandbox",
         "-C",
         cwd,
-        prompt,
       ];
+
+      // 모델/추론 강도는 설정된 경우에만 명시 전달한다.
+      // 빈 값이면 codex CLI 기본 설정(~/.codex/config.toml)을 그대로 따른다.
+      if (this.model.trim().length > 0) {
+        args.push("-m", this.model.trim());
+      }
+      if (this.reasoningEffort.trim().length > 0) {
+        args.push("-c", `model_reasoning_effort="${this.reasoningEffort.trim()}"`);
+      }
+
+      // 프롬프트는 항상 마지막 위치 인자로 전달한다.
+      args.push(prompt);
 
       const start = performance.now();
       const proc = spawn("codex", args, {

@@ -214,8 +214,10 @@ async function buildCore(): Promise<CoreServices> {
   const claudeTimeout = globalConfig.value.claudeTimeout;
   const codexTimeout = globalConfig.value.codexTimeout;
   const reviewModel = globalConfig.value.reviewModel;
+  const codexModel = globalConfig.value.codexModel;
+  const codexReasoningEffort = globalConfig.value.codexReasoningEffort;
   const claudeAgent = new ClaudeAgent(logger, claudeTimeout, reviewModel);
-  const codexAgent = new CodexAgent(logger, codexTimeout);
+  const codexAgent = new CodexAgent(logger, codexTimeout, codexModel, codexReasoningEffort);
 
   // ── Phase 3: U-04 Git & PR ──
   const gitManager = new GitManager(logger);

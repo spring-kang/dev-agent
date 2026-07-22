@@ -17,6 +17,21 @@ export interface WorkflowConfig {
    * - claude CLI에 --model <id> 인자로 전달됨
    */
   reviewModel: string;
+  // NOTE: reviewModel 기본값은 claude-opus-4-8 (리뷰 품질 우선). 비용/속도가 중요하면 sonnet 계열로 낮출 것.
+  /**
+   * Codex CLI 구현 시 사용할 모델 식별자.
+   * - 예: "gpt-5.6-sol" (복잡/모호한 코딩·에이전트 작업에 강한 모델)
+   * - 비어 있으면 codex CLI 기본 모델(~/.codex/config.toml) 사용
+   * - codex exec 에 -m <id> 인자로 전달됨
+   */
+  codexModel: string;
+  /**
+   * Codex 추론 강도(reasoning effort).
+   * - 값: "minimal" | "low" | "medium" | "high"
+   * - 비어 있으면 codex CLI 기본값 사용
+   * - codex exec 에 -c model_reasoning_effort="<v>" 로 전달됨
+   */
+  codexReasoningEffort: string;
   /**
    * 작업 브랜치의 기준(base) 브랜치명.
    * - 브랜치 생성 전 origin에서 이 브랜치를 fetch/checkout/pull(--ff-only)로 동기화한다.
@@ -65,8 +80,11 @@ export const DEFAULT_CONFIG: Readonly<WorkflowConfig> = {
   codexTimeout: 1_200_000,
   prIncludeReviewSummary: true,
   autoCommit: true,
-  // 기획은 사용자가 직접 claude로 진행 → 리뷰는 비용/품질 균형이 좋은 Sonnet으로 고정 기본값.
-  reviewModel: "claude-sonnet-4-5-20250929",
+  // 리뷰 품질을 최우선으로 Opus 4.8 고정 기본값. (비용/속도 우선이면 sonnet 계열로 하향)
+  reviewModel: "claude-opus-4-8",
+  // 구현은 복잡/모호한 코딩·에이전트 작업에 강한 gpt-5.6-sol + high 추론을 기본값으로.
+  codexModel: "gpt-5.6-sol",
+  codexReasoningEffort: "high",
   baseBranch: "main",
   // E2E 검증은 기본 비활성(opt-in). CLI(--e2e/--e2e-url) 또는 설정으로 켠다.
   e2eEnabled: false,
@@ -168,6 +186,21 @@ export const CONFIG_VALIDATION_RULES: ConfigValidationRule[] = [
     // 비어있지 않으면 영문/숫자/하이픈/점 조합만 허용 (CLI 인자 안전성)
     validate: (v) => typeof v === "string" && (v.length === 0 || /^[a-zA-Z0-9.\-]+$/.test(v)),
     message: "reviewModel은 영문/숫자/하이픈/점만 사용 가능하거나 빈 문자열이어야 합니다",
+  },
+  {
+    key: "codexModel",
+    // 빈 문자열 허용 (= codex CLI 기본 모델 사용)
+    // 비어있지 않으면 영문/숫자/하이픈/점 조합만 허용 (CLI 인자 안전성)
+    validate: (v) => typeof v === "string" && (v.length === 0 || /^[a-zA-Z0-9.\-]+$/.test(v)),
+    message: "codexModel은 영문/숫자/하이픈/점만 사용 가능하거나 빈 문자열이어야 합니다",
+  },
+  {
+    key: "codexReasoningEffort",
+    // 빈 문자열 허용 (= codex CLI 기본값). 비어있지 않으면 지원 값만 허용.
+    validate: (v) =>
+      typeof v === "string" &&
+      (v.length === 0 || ["minimal", "low", "medium", "high"].includes(v)),
+    message: "codexReasoningEffort는 minimal/low/medium/high 중 하나이거나 빈 문자열이어야 합니다",
   },
   {
     key: "baseBranch",

@@ -28,6 +28,8 @@ const ENV_KEY_MAP: Record<string, keyof WorkflowConfig> = {
   DEV_AGENT_LOG_LEVEL: "logLevel",
   DEV_AGENT_CLAUDE_TIMEOUT: "claudeTimeout",
   DEV_AGENT_CODEX_TIMEOUT: "codexTimeout",
+  DEV_AGENT_CODEX_MODEL: "codexModel",
+  DEV_AGENT_CODEX_REASONING_EFFORT: "codexReasoningEffort",
   DEV_AGENT_BASE_BRANCH: "baseBranch",
   DEV_AGENT_E2E_ENABLED: "e2eEnabled",
   DEV_AGENT_E2E_URL: "e2eUrl",
