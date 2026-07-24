@@ -299,7 +299,7 @@ export class WorkflowService {
    *
    * 상태:
    *   - 이벤트 기반 live sync 는 동시 실행에서 매칭이 어긋나므로 끄고,
-   *     빌드 시작 시 "In Progress", 종료 시 완료="Done"/실패="Approved" 로 직접 전이.
+   *     빌드 시작 시 "In Progress", 종료 시 완료="Done"/실패="Failed" 로 직접 전이.
    */
   async executeBuildFromNotionBatch(options: {
     databaseId: string;
@@ -450,8 +450,8 @@ export class WorkflowService {
       });
 
       const succeeded = result.status === "completed";
-      // 최종 상태 직접 전이 (완료=Done, 실패/중단=Approved 로 재시도 가능하게)
-      await statusSync.setStatusDirect(task.pageId, succeeded ? "Done" : "Approved");
+      // 최종 상태 직접 전이 (완료=Done, 실패/중단=Failed 로 확인 필요 상태 유지)
+      await statusSync.setStatusDirect(task.pageId, succeeded ? "Done" : "Failed");
 
       if (succeeded && result.prUrl) {
         try {
@@ -475,7 +475,7 @@ export class WorkflowService {
         error: result.error?.message ?? `워크플로우 상태: ${result.status}`,
       };
     } catch (err) {
-      await statusSync.setStatusDirect(task.pageId, "Approved");
+      await statusSync.setStatusDirect(task.pageId, "Failed");
       this.logger.error(`[${task.domain}] 빌드 실패: ${(err as Error).message}`);
       return { ...base, status: "failed", error: (err as Error).message };
     } finally {
@@ -543,7 +543,7 @@ export class WorkflowService {
         try {
           await this.notionStatusSync.setStatusDirect(
             notionPageId,
-            result.status === "completed" ? "Done" : "Approved",
+            result.status === "completed" ? "Done" : "Failed",
           );
         } catch (error) {
           this.logger.warn(

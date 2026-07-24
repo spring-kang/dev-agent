@@ -141,8 +141,8 @@ export const DEFAULT_NOTION_STATUS_MAPPING: Record<WorkflowPhase, string> = {
   review: "In Review",
   pr_creation: "In Review",
   completed: "Done",
-  failed: "Approved",
-  stopped: "Approved",
+  failed: "Failed",
+  stopped: "Failed",
 };
 
 // ── 통합 메타데이터 (워크플로우 상태에 부착) ──
